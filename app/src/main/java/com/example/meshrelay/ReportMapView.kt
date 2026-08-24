@@ -16,9 +16,8 @@ import kotlin.math.roundToLong
  * The command centre: reports plotted where they were actually sent from.
  *
  * No basemap, no tiles, no venue file. Nothing to load, nothing to configure, and it
- * works at any site on earth - which is the point of dropping named zones. What a
- * dispatcher needs is the shape of the trouble: three reports clustered here, a medical
- * call eighty metres over there.
+ * works at any site on earth. What a dispatcher needs is the shape of the trouble: three
+ * reports clustered here, a medical call eighty metres over there.
  *
  * A real deployment would put the organiser's own site plan behind this. That is a
  * drawing job, not a protocol job, and saying so is more honest than pretending a
@@ -33,14 +32,34 @@ class ReportMapView @JvmOverloads constructor(
     private var groups: List<Pair<Position, List<MeshMessage>>> = emptyList()
     private var own: Position? = null
 
+    // --- what this phone is walking towards -------------------------------
+    private var target: MeshMessage? = null
+    private var targetDistance: Double? = null
+
+    /** Distance when the trend was last updated, so small GPS jitter cannot flip it. */
+    private var markDistance: Double? = null
+    private var trend: String = ""
+
+    /**
+     * The map fits everything on screen, which quietly defeats the thing a person walking
+     * actually wants to see: as they get closer the view zoomed in by the same amount, so
+     * the two dots never appeared to meet. Holding the scale while heading for the same
+     * report lets the gap visibly close.
+     */
+    private var heldSpan: Double = 0.0
+
     private val blip = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 4f
     }
+    private val leash = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+    }
     private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val note = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val scaleBar = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 3f }
+    private val headline = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFakeBoldText = true }
 
     fun show(messages: List<MeshMessage>, ownPosition: Position?) {
         own = ownPosition
@@ -49,7 +68,40 @@ class ReportMapView @JvmOverloads constructor(
         groups = messages.filter { it.pos != null }
             .groupBy { it.pos!!.encode() }
             .map { (_, list) -> list.first().pos!! to list }
+
+        updateTarget(messages, ownPosition)
         invalidate()
+    }
+
+    /** Which report to head for is a decision-layer choice, so it lives in Positioning.kt. */
+    private fun updateTarget(messages: List<MeshMessage>, here: Position?) {
+        val pick = chooseTarget(messages, here)
+        if (pick == null || here == null) {
+            target = null
+            targetDistance = null
+            trend = ""
+            heldSpan = 0.0
+            return
+        }
+
+        val d = Position.metresBetween(here, pick.pos!!)
+
+        if (pick.id != target?.id) {
+            // New target: start again rather than carry a stale trend across.
+            target = pick
+            markDistance = d
+            trend = ""
+            heldSpan = 0.0
+        } else {
+            val mark = markDistance
+            // Five metres is roughly GPS noise. Below that, saying "getting closer" would
+            // be inventing progress out of jitter.
+            if (mark != null && abs(d - mark) >= 5.0) {
+                trend = if (d < mark) "getting closer" else "getting further"
+                markDistance = d
+            }
+        }
+        targetDistance = d
     }
 
     private fun ink(): Int {
@@ -60,15 +112,16 @@ class ReportMapView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val faded = (ink() and 0x00FFFFFF) or 0x99000000.toInt()
+        val solid = ink()
+        val faded = (solid and 0x00FFFFFF) or 0x99000000.toInt()
         note.color = faded
-        scaleBar.color = faded
         label.color = Color.WHITE
 
         val pad = width * 0.10f
         note.textSize = width * 0.032f
         label.textSize = width * 0.036f
         label.isFakeBoldText = true
+        headline.textSize = width * 0.042f
 
         val points = groups.map { it.first } + listOfNotNull(own)
         if (points.isEmpty()) {
@@ -78,8 +131,8 @@ class ReportMapView @JvmOverloads constructor(
             return
         }
 
-        // Flat-earth approximation around the centre. Over a venue-sized area the error
-        // is far below GPS noise, and it avoids any projection library.
+        // Flat-earth approximation around the centre. Over a venue-sized area the error is
+        // far below GPS noise, and it avoids any projection library.
         val lat0 = points.sumOf { it.lat } / points.size
         val lon0 = points.sumOf { it.lon } / points.size
         val mPerLat = 110_540.0
@@ -88,12 +141,17 @@ class ReportMapView @JvmOverloads constructor(
         fun eastOf(p: Position) = (p.lon - lon0) * mPerLon
         fun northOf(p: Position) = (p.lat - lat0) * mPerLat
 
-        // Never zoom in further than 40 m across, or two reports a metre apart would
-        // fill the screen and look like a city.
+        // Never zoom closer than 40 m across, or two reports a metre apart fill the screen.
         var span = 40.0
         for (p in points) {
             span = max(span, abs(eastOf(p)) * 2.4)
             span = max(span, abs(northOf(p)) * 2.4)
+        }
+        // Hold the scale while walking to the same report, so approaching actually looks
+        // like approaching. Only ever widen.
+        if (target != null) {
+            heldSpan = max(heldSpan, span)
+            span = heldSpan
         }
 
         val usable = minOf(width, height) - pad * 2
@@ -102,43 +160,78 @@ class ReportMapView @JvmOverloads constructor(
         fun sx(p: Position) = width / 2f + (eastOf(p) * scale).toFloat()
         fun sy(p: Position) = height / 2f - (northOf(p) * scale).toFloat()
 
+        // The gap, drawn as a line that visibly shortens as you close it.
+        val here = own
+        val aim = target?.pos
+        if (here != null && aim != null) {
+            leash.color = faded
+            canvas.drawLine(sx(here), sy(here), sx(aim), sy(aim), leash)
+            targetDistance?.let { d ->
+                note.textAlign = Paint.Align.CENTER
+                canvas.drawText(
+                    describeDistance(d),
+                    (sx(here) + sx(aim)) / 2f,
+                    (sy(here) + sy(aim)) / 2f - note.textSize * 0.4f,
+                    note
+                )
+                note.textAlign = Paint.Align.LEFT
+            }
+        }
+
         own?.let {
-            ring.color = faded
+            ring.color = solid
             canvas.drawCircle(sx(it), sy(it), width * 0.030f, ring)
             note.textAlign = Paint.Align.CENTER
             canvas.drawText("you", sx(it), sy(it) - width * 0.042f, note)
             note.textAlign = Paint.Align.LEFT
         }
 
-        for ((pos, here) in groups) {
-            val worst = here.maxOf { it.priority }
+        for ((pos, list) in groups) {
+            val worst = list.maxOf { it.priority }
             blip.color = colourFor(worst)
             blip.alpha = 225
-            val r = width * (0.038f + 0.008f * minOf(here.size - 1, 4))
+            val r = width * (0.038f + 0.008f * minOf(list.size - 1, 4))
             canvas.drawCircle(sx(pos), sy(pos), r, blip)
-            if (here.size > 1) {
+            if (list.size > 1) {
                 canvas.drawText(
-                    here.size.toString(),
-                    sx(pos),
-                    sy(pos) + label.textSize * 0.36f,
-                    label
+                    list.size.toString(), sx(pos), sy(pos) + label.textSize * 0.36f, label
                 )
             }
         }
 
-        drawScale(canvas, scale, pad)
+        drawHeadline(canvas, solid)
+        drawScale(canvas, scale, pad, faded)
+    }
+
+    /**
+     * The single most useful thing to tell someone walking towards an emergency, stated
+     * rather than left as arithmetic between two glances at a number.
+     */
+    private fun drawHeadline(canvas: Canvas, solid: Int) {
+        val t = target ?: return
+        val d = targetDistance ?: return
+        headline.color = colourFor(t.priority)
+        canvas.drawText(
+            t.type.label.uppercase() + "   " + describeDistance(d),
+            width * 0.04f, headline.textSize * 1.4f, headline
+        )
+        if (trend.isNotEmpty()) {
+            note.color = solid
+            canvas.drawText(trend, width * 0.04f, headline.textSize * 2.6f, note)
+            note.color = (solid and 0x00FFFFFF) or 0x99000000.toInt()
+        }
     }
 
     /** Without a scale, a plot of dots says nothing about how far apart anything is. */
-    private fun drawScale(canvas: Canvas, pxPerMetre: Float, pad: Float) {
-        val target = width * 0.28f
-        val metres = niceRound((target / pxPerMetre).toDouble())
+    private fun drawScale(canvas: Canvas, pxPerMetre: Float, pad: Float, colour: Int) {
+        val bar = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 3f; color = colour }
+        val metres = niceRound((width * 0.28f / pxPerMetre).toDouble())
         val barPx = (metres * pxPerMetre).toFloat()
         val y = height - pad * 0.55f
         val x0 = pad * 0.6f
-        canvas.drawLine(x0, y, x0 + barPx, y, scaleBar)
-        canvas.drawLine(x0, y - 10f, x0, y + 10f, scaleBar)
-        canvas.drawLine(x0 + barPx, y - 10f, x0 + barPx, y + 10f, scaleBar)
+        canvas.drawLine(x0, y, x0 + barPx, y, bar)
+        canvas.drawLine(x0, y - 10f, x0, y + 10f, bar)
+        canvas.drawLine(x0 + barPx, y - 10f, x0 + barPx, y + 10f, bar)
         canvas.drawText(
             if (metres >= 1000) (metres / 1000).roundToLong().toString() + " km"
             else metres.roundToLong().toString() + " m",

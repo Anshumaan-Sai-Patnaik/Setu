@@ -58,6 +58,24 @@ data class Position(val lat: Double, val lon: Double) {
     }
 }
 
+/**
+ * The report a responder should be heading for: the most urgent one carrying a location,
+ * nearest first among equals.
+ *
+ * NOT simply the closest. Walking to a nearby question about the food stall while a heart
+ * attack sits two hundred metres away is not triage - it is proximity pretending to be
+ * judgement. Urgency decides, distance only breaks ties.
+ */
+fun chooseTarget(messages: List<MeshMessage>, here: Position?): MeshMessage? {
+    if (here == null) return null
+    return messages.filter { it.pos != null && !it.type.isPlumbing }
+        .sortedWith(
+            compareByDescending<MeshMessage> { it.priority }
+                .thenBy { Position.metresBetween(here, it.pos!!) }
+        )
+        .firstOrNull()
+}
+
 /** Human-readable distance, for someone reading a report under pressure. */
 fun describeDistance(metres: Double): String = when {
     metres < 1000 -> metres.roundToLong().toString() + " m away"

@@ -630,7 +630,7 @@ class MainActivity : AppCompatActivity() {
             // this whole project assumes is gone.
             lastFix = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
             locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER, 5000L, 5f, fixListener
+                LocationManager.GPS_PROVIDER, 2000L, 0f, fixListener
             )
             log(
                 if (lastFix != null) "Location on (using last fix while GPS warms up)"

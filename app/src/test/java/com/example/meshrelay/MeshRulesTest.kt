@@ -299,6 +299,63 @@ class MeshRulesTest {
         assertTrue(r.canOriginate(MsgType.LOCFIX, now))
     }
 
+    /**
+     * Which report a responder walks towards. Urgency decides; distance only breaks ties.
+     * Proximity pretending to be judgement is how the nearest trivial thing gets attended
+     * to while a heart attack waits.
+     */
+    @Test
+    fun `a distant emergency outranks a nearby question`() {
+        val here = Position(17.38500, 78.48670)
+        val nearChatter = MeshMessage(
+            "i-1", "a", MsgType.INFO, "where is the food stall",
+            Position(17.38505, 78.48670), null, null, 1L, 6, 6, mutableListOf(), null
+        )
+        val farEmergency = MeshMessage(
+            "m-1", "b", MsgType.MEDICAL, "chest pain",
+            Position(17.38700, 78.48670), null, null, 1L, 6, 24, mutableListOf(), null
+        )
+        assertEquals("m-1", chooseTarget(listOf(nearChatter, farEmergency), here)!!.id)
+    }
+
+    @Test
+    fun `among equally urgent reports the nearest is chosen`() {
+        val here = Position(17.38500, 78.48670)
+        val near = MeshMessage(
+            "m-near", "a", MsgType.MEDICAL, "collapsed",
+            Position(17.38510, 78.48670), null, null, 1L, 6, 24, mutableListOf(), null
+        )
+        val far = MeshMessage(
+            "m-far", "b", MsgType.MEDICAL, "collapsed",
+            Position(17.39000, 78.48670), null, null, 1L, 6, 24, mutableListOf(), null
+        )
+        assertEquals("m-near", chooseTarget(listOf(far, near), here)!!.id)
+    }
+
+    @Test
+    fun `nothing to head for without a position on either side`() {
+        val located = MeshMessage(
+            "m-1", "a", MsgType.MEDICAL, "collapsed", Position(17.0, 78.0), null, null,
+            1L, 6, 24, mutableListOf(), null
+        )
+        val unlocated = MeshMessage(
+            "m-2", "a", MsgType.MEDICAL, "collapsed", null, null, null,
+            1L, 6, 24, mutableListOf(), null
+        )
+        assertNull(chooseTarget(listOf(located), null))
+        assertNull(chooseTarget(listOf(unlocated), Position(17.0, 78.0)))
+    }
+
+    @Test
+    fun `a location follow-up is never something to walk towards`() {
+        val here = Position(17.0, 78.0)
+        val plumbing = MeshMessage(
+            "a-2", "a", MsgType.LOCFIX, "", Position(17.001, 78.0), null, "a-1",
+            1L, 6, 16, mutableListOf(), null
+        )
+        assertNull(chooseTarget(listOf(plumbing), here))
+    }
+
     @Test
     fun `no message type is given a budget too small to be relayed`() {
         // Halving means a budget under 4 cannot survive a single relay. 6 leaves margin.
