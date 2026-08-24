@@ -19,10 +19,12 @@ import java.util.Locale
 class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
 
     private var items: List<MeshMessage> = emptyList()
+    private var own: Position? = null
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
 
-    fun submit(list: List<MeshMessage>) {
+    fun submit(list: List<MeshMessage>, ownPosition: Position? = null) {
         items = list
+        own = ownPosition
         notifyDataSetChanged()
     }
 
@@ -47,7 +49,17 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
         // A verified order is marked as one. An unsigned order never reaches this list
         // at all - it is refused before it is stored.
         val badge = if (m.type.needsSignature) "  [VERIFIED ORDER]" else ""
-        holder.head.text = m.type.label.uppercase() + badge
+        // Distance is what a dispatcher can act on. Raw coordinates are not.
+        val here = own
+        val there = m.pos
+        val where = when {
+            there != null && here != null ->
+                "  -  " + describeDistance(Position.metresBetween(here, there))
+            there != null -> "  -  " + there.encode()
+            m.place != null -> "  -  " + m.place        // typed, when GPS could not be had
+            else -> ""
+        }
+        holder.head.text = m.type.label.uppercase() + where + badge
         holder.head.setTextColor(colourFor(m.priority))
 
         holder.body.text = m.text

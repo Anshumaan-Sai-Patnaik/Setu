@@ -20,7 +20,10 @@ class MeshRulesTest {
         ttl: Int = 6,
         copies: Int = 6,
         createdAt: Long = 1000L
-    ) = MeshMessage(id, "them", type, "text", createdAt, ttl, copies, mutableListOf("them"), null)
+    ) = MeshMessage(
+        id, "them", type, "text", null, null, null, createdAt, ttl, copies,
+        mutableListOf("them"), null
+    )
 
     @Test
     fun `wire format survives a round trip`() {
@@ -37,14 +40,61 @@ class MeshRulesTest {
 
     @Test
     fun `a pipe in the text does not break the packet`() {
-        val m = MeshMessage("x-1", "x", MsgType.INFO, "gate 4 | gate 5", 1L, 6, 6, mutableListOf(), null)
+        val m = MeshMessage(
+            "x-1", "x", MsgType.INFO, "gate 4 | gate 5", null, null, null, 1L, 6, 6,
+            mutableListOf(), null
+        )
         assertEquals("gate 4 | gate 5", Wire.decode(Wire.encode(m))!!.text)
     }
 
     @Test
     fun `rubbish is dropped, not crashed on`() {
         assertNull(Wire.decode("hello"))
-        assertNull(Wire.decode("v9|a|b|INFO|1|1|1||"))
+        assertNull(Wire.decode("v1|a|b|INFO|1|1|1||x|y"))
+    }
+
+    @Test
+    fun `the reported position survives the trip`() {
+        val r = rules()
+        val here = Position(17.38500, 78.48670)
+        val m = r.originate(MsgType.CROWD, "crush at the barrier", 1L, null, here)
+        assertEquals(here, Wire.decode(Wire.encode(m))!!.pos)
+    }
+
+    @Test
+    fun `a report with no position is still carried`() {
+        val r = rules()
+        val m = r.originate(MsgType.MEDICAL, "someone has collapsed", 1L)
+        assertNull(m.pos)
+        val back = Wire.decode(Wire.encode(m))
+        assertNotNull(back)
+        assertNull(back!!.pos)
+    }
+
+    @Test
+    fun `a nonsense position is dropped, and the report still arrives`() {
+        val m = Wire.decode("v4|a-1|a|INFO|banana|||6|6|1|a||hello")
+        assertNotNull(m)
+        assertNull(m!!.pos)
+        assertEquals("hello", m.text)
+    }
+
+    @Test
+    fun `distance between two points is right`() {
+        // One ten-thousandth of a degree of latitude is about 11 metres, anywhere.
+        val d = Position.metresBetween(Position(17.3850, 78.4867), Position(17.3851, 78.4867))
+        assertTrue("got " + d, d > 10.0 && d < 12.5)
+    }
+
+    /**
+     * A phone running the old build must fail loudly rather than half-work. A mixed-build
+     * demo that silently misreads fields would look like a radio fault (Plan.md 11.5).
+     */
+    @Test
+    fun `a packet from a previous wire version is refused`() {
+        assertNull(Wire.decode("v1|a-1|a|INFO|6|6|1|a||hello"))
+        assertNull(Wire.decode("v2|a-1|a|INFO|GATE_3|6|6|1|a||hello"))
+        assertNull(Wire.decode("v3|a-1|a|INFO|17.1,78.1|6|6|1|a||hello"))
     }
 
     @Test
@@ -162,6 +212,91 @@ class MeshRulesTest {
 
             assertEquals(type.name + ": path is wrong", listOf("A", "B", "C"), atC.path)
         }
+    }
+
+    @Test
+    fun `a late location catches up with the report it belongs to`() {
+        val phone = MeshRules(myNodeId = "far")
+
+        // The urgent report arrives first, with no position - the sender had no fix.
+        val report = MeshMessage(
+            "a-1", "a", MsgType.MEDICAL, "chest pain", null, null, null,
+            1L, 6, 24, mutableListOf("a"), null
+        )
+        assertEquals(Verdict.ACCEPTED, phone.onReceive(report, "a"))
+        assertNull(phone.inboxOrder().first().pos)
+
+        // The follow-up arrives once the sender's GPS finally worked.
+        val here = Position(17.38500, 78.48670)
+        val fix = MeshMessage(
+            "a-2", "a", MsgType.LOCFIX, "", here, null, "a-1",
+            2L, 6, 16, mutableListOf("a"), null
+        )
+        assertEquals(Verdict.ACCEPTED, phone.onReceive(fix, "a"))
+
+        assertEquals(here, phone.inboxOrder().first().pos)
+        assertEquals("the update itself must never be shown", 1, phone.inboxOrder().size)
+    }
+
+    @Test
+    fun `a late location still lands if it arrives before the report`() {
+        val phone = MeshRules(myNodeId = "far")
+        val here = Position(17.38500, 78.48670)
+
+        phone.onReceive(
+            MeshMessage("a-2", "a", MsgType.LOCFIX, "", here, null, "a-1",
+                2L, 6, 16, mutableListOf("a"), null), "a"
+        )
+        phone.onReceive(
+            MeshMessage("a-1", "a", MsgType.MEDICAL, "chest pain", null, null, null,
+                1L, 6, 24, mutableListOf("a"), null), "a"
+        )
+        assertEquals(here, phone.inboxOrder().first().pos)
+    }
+
+    /**
+     * If a location could be bolted onto a signed evacuation order after the fact, that is
+     * the redirect-the-crowd hole straight back open.
+     */
+    @Test
+    fun `a signed order can never be amended`() {
+        val phone = MeshRules(myNodeId = "far", verifySignature = { it.sig == "ok" })
+        val order = MeshMessage(
+            "o-1", "org", MsgType.AUTHORITY, "EVACUATE", Position(17.0, 78.0), null, null,
+            1L, 6, 24, mutableListOf("org"), "ok"
+        )
+        assertEquals(Verdict.ACCEPTED, phone.onReceive(order, "org"))
+
+        val hijack = MeshMessage(
+            "o-2", "org", MsgType.LOCFIX, "", Position(12.0, 77.0), null, "o-1",
+            2L, 6, 16, mutableListOf("org"), null
+        )
+        phone.onReceive(hijack, "org")
+        assertEquals(Position(17.0, 78.0), phone.inboxOrder().first().pos)
+    }
+
+    @Test
+    fun `only the author of a report may amend it`() {
+        val phone = MeshRules(myNodeId = "far")
+        phone.onReceive(
+            MeshMessage("a-1", "a", MsgType.MEDICAL, "chest pain", null, null, null,
+                1L, 6, 24, mutableListOf("a"), null), "a"
+        )
+        phone.onReceive(
+            MeshMessage("z-9", "z", MsgType.LOCFIX, "", Position(1.0, 1.0), null, "a-1",
+                2L, 6, 16, mutableListOf("z"), null), "z"
+        )
+        assertNull(phone.inboxOrder().first().pos)
+    }
+
+    @Test
+    fun `location updates are not rate limited as emergencies`() {
+        val r = rules()
+        val now = 10_000_000L
+        repeat(5) { r.originate(MsgType.MEDICAL, "help", now) }
+        assertTrue(!r.canOriginate(MsgType.MEDICAL, now))
+        // The follow-up must still get out, or the report it belongs to stays unlocated.
+        assertTrue(r.canOriginate(MsgType.LOCFIX, now))
     }
 
     @Test

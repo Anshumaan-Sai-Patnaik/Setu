@@ -1,12 +1,17 @@
 package com.example.meshrelay
 
 import android.Manifest
+import android.content.Context
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.Spinner
@@ -51,8 +56,21 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spType: Spinner
     private lateinit var rvInbox: RecyclerView
     private lateinit var tvPaneTitle: TextView
+    private lateinit var chkLoc: CheckBox
+    private lateinit var mapView: ReportMapView
     private val inbox = MessageAdapter()
-    private var showingLog = false
+
+    /** INBOX -> MAP -> LOG, cycled by one button. */
+    private enum class Pane(val title: String, val next: String) {
+        INBOX("INCOMING - most urgent first", "MAP"),
+        MAP("COMMAND CENTRE - reports by location", "LOG"),
+        LOG("DEBUG LOG", "INBOX")
+    }
+
+    private var pane = Pane.INBOX
+
+    /** What a person may actually send. Excludes app plumbing such as location updates. */
+    private val reportableTypes = MsgType.entries.filter { !it.isPlumbing }
 
     // A permanent identity for this phone, created once on first launch and kept
     // afterwards. Used both to break connection ties and to tag messages.
@@ -130,6 +148,14 @@ class MainActivity : AppCompatActivity() {
         spType = findViewById(R.id.spType)
         rvInbox = findViewById(R.id.rvInbox)
         tvPaneTitle = findViewById(R.id.tvPaneTitle)
+        chkLoc = findViewById(R.id.chkLoc)
+        mapView = findViewById(R.id.mapView)
+
+        // Sharing a position is opt-in and starts OFF. This network copies messages onto
+        // strangers phones and holds them for hours; that is the wrong place for anyone
+        // exact whereabouts unless they chose it knowingly.
+        chkLoc.setOnCheckedChangeListener { _, on -> if (on) startLocation() else stopLocation() }
+        chkLoc.setOnLongClickListener { showSimulatedPositionDialog(); true }
 
         rvInbox.layoutManager = LinearLayoutManager(this)
         rvInbox.adapter = inbox
@@ -141,10 +167,11 @@ class MainActivity : AppCompatActivity() {
             .getStringSet("blocked", emptySet()) ?: emptySet()
 
         // The app assigns priority from the type. The user never types "URGENT".
+        // Plumbing types are not offered - they are sent by the app, not by a person.
         spType.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_dropdown_item,
-            MsgType.entries.map { it.label + "  (priority " + it.priority + ")" }
+            reportableTypes.map { it.label + "  (priority " + it.priority + ")" }
         )
 
         findViewById<Button>(R.id.btnStart).setOnClickListener {
@@ -182,7 +209,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnSend).setOnClickListener {
             val text = etMessage.text.toString().trim()
             if (text.isNotEmpty()) {
-                originateAndSend(MsgType.entries[spType.selectedItemPosition], text)
+                originateAndSend(reportableTypes[spType.selectedItemPosition], text)
                 etMessage.setText("")
             }
         }
@@ -372,12 +399,13 @@ class MainActivity : AppCompatActivity() {
             if (type.needsSignature && key != null) { draft -> Authority.sign(draft, key) }
             else null
 
-        val m = rules.originate(type, text, now, signer)
+        val m = rules.originate(type, text, now, signer, positionToAttach(), placeToAttach())
         if (type.needsSignature) {
             log(if (m.sig != null) "    signed as organiser" else "    NO KEY - this will be refused by every phone")
         }
         log("<<< SENT " + type.name + " p" + m.priority + " copies=" + m.copies + ": " + m.text)
         broadcast(m)
+        rememberForLateLocation(m)
         updateStats()
     }
 
@@ -551,17 +579,247 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // -----------------------------------------------------------------------
+    // Location - opt-in, never blocking
+    // -----------------------------------------------------------------------
+
+    private var lastFix: Location? = null
+
+    /**
+     * A position typed in by hand for the demo. Three phones on one table are all at the
+     * same coordinates, and indoors they will not get a fix at all - so the map would show
+     * one dot and prove nothing.
+     *
+     * This is the same kind of stage constraint as the topology lock, and it gets the same
+     * treatment: say it out loud. "These three phones are on one table, so their positions
+     * are set by hand. The field carries real GPS in the field."
+     */
+    private var simulatedPosition: Position? = null
+
+    private val locationManager by lazy {
+        getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    }
+
+    private var announcedFix = false
+
+    private val fixListener = LocationListener { loc ->
+        lastFix = loc
+        // Say it out loud the first time, so "does GPS work with no internet?" is a thing
+        // you can watch happen rather than take on trust.
+        if (!announcedFix) {
+            announcedFix = true
+            log(
+                "GPS FIX with no internet: " + Position(loc.latitude, loc.longitude).encode() +
+                    "  (+/- " + loc.accuracy.toInt() + " m)"
+            )
+        }
+        sendLateLocations()
+        refreshInbox()
+    }
+
+    private fun startLocation() {
+        if (simulatedPosition != null) return          // already have a demo position
+        announcedFix = false
+        try {
+            if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                // A phone set to locate itself only from Wi-Fi and cell towers will never
+                // get a position offline, and the failure is silent. Say so.
+                log("GPS is switched off for this phone - no position will ever arrive")
+            }
+            // GPS only. The network provider needs the internet, which is exactly what
+            // this whole project assumes is gone.
+            lastFix = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER, 5000L, 5f, fixListener
+            )
+            log(
+                if (lastFix != null) "Location on (using last fix while GPS warms up)"
+                else "Location on - waiting for a GPS fix. Messages will not wait for it."
+            )
+            // Tell the user we cannot see satellites BEFORE they need to report something,
+            // not while they are trying to.
+            handler.postDelayed({
+                if (chkLoc.isChecked && currentPosition() == null && typedPlace == null) {
+                    askForTypedPlace()
+                }
+            }, 20_000L)
+        } catch (e: SecurityException) {
+            log("Location permission missing")
+        } catch (e: Exception) {
+            log("GPS unavailable on this device")
+        }
+    }
+
+    private fun stopLocation() {
+        try {
+            locationManager.removeUpdates(fixListener)
+        } catch (e: Exception) {
+            // nothing to remove
+        }
+        log("Location off - messages will carry no position")
+    }
+
+    private fun currentPosition(): Position? {
+        simulatedPosition?.let { return it }
+        val f = lastFix ?: return null
+        // A fix from an hour ago is a lie about where someone is now.
+        if (System.currentTimeMillis() - f.time > 5 * 60_000L) return null
+        return Position(f.latitude, f.longitude)
+    }
+
+    /**
+     * THE MESSAGE NEVER WAITS FOR A FIX. A cold GPS start can take minutes. A medical
+     * report that arrived late because it was waiting for satellites is a failure, so if
+     * there is no position ready the message goes without one.
+     */
+    private fun positionToAttach(): Position? {
+        if (!chkLoc.isChecked) return null
+        val p = currentPosition()
+        if (p == null && typedPlace == null) log("    no fix yet - sent without a location")
+        return p
+    }
+
+    private fun placeToAttach(): String? = if (chkLoc.isChecked) typedPlace else null
+
+    // -----------------------------------------------------------------------
+    // Late location: the message goes now, the location catches up
+    // -----------------------------------------------------------------------
+
+    /**
+     * Urgent reports this phone sent before it had a position, with the time they were
+     * sent. When a fix finally arrives - or the user types where they are - each one gets
+     * a small follow-up message carrying the location.
+     *
+     * Only urgent reports. Chasing a "where is the food stall" with a second message
+     * would spend the crowd's radio time on nothing.
+     */
+    private val awaitingLocation = mutableMapOf<String, Long>()
+
+    /** After this long, a location is no longer worth sending. Stop holding it. */
+    private val locationChaseWindow = 10 * 60_000L
+
+    private var typedPlace: String? = null
+
+    private fun rememberForLateLocation(m: MeshMessage) {
+        if (m.type.isPlumbing || m.priority < 8) return
+        if (m.pos != null || m.place != null) return
+        awaitingLocation[m.id] = System.currentTimeMillis()
+        log("    location will follow if a fix arrives")
+    }
+
+    /**
+     * Send the location that was missing when the report went out.
+     *
+     * It cannot be the same message sent again: every phone has that id in its seen-set
+     * and would drop the second copy as a duplicate. So it travels as its own small
+     * message pointing back at the original.
+     */
+    private fun sendLateLocations() {
+        if (awaitingLocation.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val pos = currentPosition()
+        val place = typedPlace
+        if (pos == null && place == null) return
+
+        awaitingLocation.entries.removeAll { (id, sentAt) ->
+            if (now - sentAt > locationChaseWindow) {
+                log("Gave up chasing a location for " + id)
+                return@removeAll true
+            }
+            val update = rules.originate(
+                MsgType.LOCFIX, "", now, null, pos, place, id
+            )
+            log("LOCATION FOLLOW-UP for " + id + ": " + (pos?.encode() ?: place))
+            broadcast(update)
+            true
+        }
+        refreshInbox()
+        updateStats()
+    }
+
+    /**
+     * Asked when the checkbox is ticked and no fix arrives, NOT when the user is trying to
+     * send. Interrupting someone reporting a heart attack to ask for their address is the
+     * wrong moment; asking beforehand costs nothing.
+     */
+    private fun askForTypedPlace() {
+        if (isFinishing) return
+        val input = EditText(this).apply {
+            hint = "e.g. near the big red tent, north side"
+            setText(typedPlace ?: "")
+        }
+        AlertDialog.Builder(this)
+            .setTitle("No GPS signal")
+            .setMessage(
+                "Your phone cannot get a satellite fix here - usually because of a roof. " +
+                    "Describe where you are instead, and it will be sent with your reports."
+            )
+            .setView(input)
+            .setPositiveButton("Use this") { _, _ ->
+                typedPlace = input.text.toString().trim().take(60).ifEmpty { null }
+                if (typedPlace != null) {
+                    log("Location typed by hand: " + typedPlace)
+                    sendLateLocations()
+                }
+            }
+            .setNegativeButton("Skip", null)
+            .show()
+    }
+
+    private fun showSimulatedPositionDialog() {
+        val input = EditText(this).apply {
+            hint = "17.38500, 78.48670"
+            setText(simulatedPosition?.encode() ?: "")
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Set position by hand (demo)")
+            .setMessage(
+                "Three phones on one table share one position, and indoors there is no " +
+                    "GPS fix at all. Setting it here makes the map meaningful. Say so on stage."
+            )
+            .setView(input)
+            .setPositiveButton("Set") { _, _ ->
+                val p = Position.decode(input.text.toString().replace(" ", ""))
+                if (p == null) {
+                    log("Could not read that as lat,lon")
+                } else {
+                    simulatedPosition = p
+                    chkLoc.isChecked = true
+                    log("Position set by hand: " + p.encode() + " (DEMO)")
+                    sendLateLocations()
+                    refreshInbox()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Use real GPS") { _, _ ->
+                simulatedPosition = null
+                log("Back to real GPS")
+                if (chkLoc.isChecked) startLocation()
+            }
+            .show()
+    }
+
     private fun toggleView() {
-        showingLog = !showingLog
-        svLog.visibility = if (showingLog) android.view.View.VISIBLE else android.view.View.GONE
-        rvInbox.visibility = if (showingLog) android.view.View.GONE else android.view.View.VISIBLE
-        tvPaneTitle.text =
-            if (showingLog) "DEBUG LOG" else "INCOMING - most urgent first"
-        findViewById<Button>(R.id.btnView).text = if (showingLog) "INBOX" else "LOG"
+        pane = when (pane) {
+            Pane.INBOX -> Pane.MAP
+            Pane.MAP -> Pane.LOG
+            Pane.LOG -> Pane.INBOX
+        }
+        fun vis(on: Boolean) = if (on) android.view.View.VISIBLE else android.view.View.GONE
+        rvInbox.visibility = vis(pane == Pane.INBOX)
+        mapView.visibility = vis(pane == Pane.MAP)
+        svLog.visibility = vis(pane == Pane.LOG)
+        tvPaneTitle.text = pane.title
+        findViewById<Button>(R.id.btnView).text = pane.next
+        refreshInbox()
     }
 
     private fun refreshInbox() {
-        runOnUiThread { inbox.submit(rules.inboxOrder()) }
+        runOnUiThread {
+            val held = rules.inboxOrder()
+            inbox.submit(held, currentPosition())
+            mapView.show(held, currentPosition())
+        }
     }
 
     private fun updateStats() {

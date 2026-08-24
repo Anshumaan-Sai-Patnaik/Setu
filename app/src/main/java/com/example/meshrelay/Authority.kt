@@ -46,9 +46,18 @@ object Authority {
      * when it needs to still be checkable.
      *
      * Change one character of the text - Gate 7 to Gate 3 - and this stops matching.
+     *
+     * The POSITION is inside the signature. It has to be: an evacuation order says WHERE,
+     * and anyone able to rewrite the coordinates of a genuine signed order without breaking
+     * it could redirect a crowd using the organiser own authority. Signing the words but
+     * not the place would leave open the exact hole this mechanism exists to close.
      */
     private fun signedBytes(m: MeshMessage): ByteArray =
-        listOf(m.id, m.origin, m.type.name, m.createdAt.toString(), m.text)
+        listOf(
+            m.id, m.origin, m.type.name,
+            m.pos?.encode() ?: "", m.place ?: "",
+            m.createdAt.toString(), m.text
+        )
             .joinToString("")
             .toByteArray(Charsets.UTF_8)
 
