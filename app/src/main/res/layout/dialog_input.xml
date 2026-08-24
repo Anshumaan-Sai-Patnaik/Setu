@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The body of the two dialogs that are part of the demo: pasting the organiser key,
+  and setting a position by hand.
+
+  Both were a bare EditText handed straight to AlertDialog, which puts it flush against
+  the edge with no padding and no explanation. These are the two moments a judge is
+  most likely to be looking over a shoulder, so they get a real layout:
+
+      what this does  ->  the field  ->  the caveat worth saying out loud
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="24dp"
+    android:paddingEnd="24dp"
+    android:paddingTop="4dp"
+    android:paddingBottom="8dp">
+
+    <TextView
+        android:id="@+id/tvDialogBody"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp"
+        android:lineSpacingExtra="3dp" />
+
+    <EditText
+        android:id="@+id/etDialogInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:background="@drawable/bg_input"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="14dp"
+        android:textColor="@color/text_primary"
+        android:textColorHint="@color/text_dim"
+        android:textSize="13sp"
+        android:fontFamily="monospace"
+        android:gravity="top|start"
+        android:inputType="textMultiLine"
+        android:maxLines="4"
+        android:scrollHorizontally="false" />
+
+    <!-- The honest limit, stated where the thing actually happens rather than only
+         in the pitch notes. -->
+    <TextView
+        android:id="@+id/tvDialogNote"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="9dp"
+        android:paddingBottom="9dp"
+        android:textSize="11sp"
+        android:lineSpacingExtra="2dp"
+        android:visibility="gone" />
+</LinearLayout>

@@ -26,6 +26,51 @@
     <style name="Theme.MeshRelay" parent="Base.Theme.MeshRelay" />
 
     <!-- ================================================================
+         DIALOGS
+
+         Left on Material defaults these came out as a pale sheet with an
+         unpadded EditText jammed against the edge - the one place in the app
+         that still looked unfinished. Two of them ARE the demo (the organiser
+         key, the hand-set position), so they get the same surface, corners and
+         hairline as every other card.
+         ================================================================ -->
+    <style name="ShapeAppearance.MeshRelay.Dialog" parent="ShapeAppearance.Material3.LargeComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">18dp</item>
+    </style>
+
+    <style name="MaterialAlertDialog.MeshRelay" parent="MaterialAlertDialog.Material3">
+        <item name="shapeAppearance">@style/ShapeAppearance.MeshRelay.Dialog</item>
+        <item name="backgroundTint">@color/surface</item>
+    </style>
+
+    <style name="DialogTitle.MeshRelay" parent="MaterialAlertDialog.Material3.Title.Text">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">17sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="DialogButton.MeshRelay" parent="Widget.Material3.Button.TextButton.Dialog">
+        <item name="android:textColor">@color/teal</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.06</item>
+    </style>
+
+    <style name="ThemeOverlay.MeshRelay.Dialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorPrimary">@color/teal</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="android:textColorHint">@color/text_dim</item>
+        <item name="alertDialogStyle">@style/MaterialAlertDialog.MeshRelay</item>
+        <item name="materialAlertDialogTitleTextStyle">@style/DialogTitle.MeshRelay</item>
+        <item name="buttonBarPositiveButtonStyle">@style/DialogButton.MeshRelay</item>
+        <item name="buttonBarNegativeButtonStyle">@style/DialogButton.MeshRelay</item>
+        <item name="buttonBarNeutralButtonStyle">@style/DialogButton.MeshRelay</item>
+    </style>
+
+    <!-- ================================================================
          Text roles. Named for what they mean, not what they look like.
          ================================================================ -->
 

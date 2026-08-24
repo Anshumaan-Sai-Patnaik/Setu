@@ -15,8 +15,9 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -566,17 +567,40 @@ class MainActivity : AppCompatActivity() {
      * one. That is not built.
      */
     private fun showKeyDialog() {
-        val input = EditText(this).apply {
-            hint = "Paste organiser private key"
-            setText(organiserKey?.let { "" } ?: "")
-        }
-        AlertDialog.Builder(this)
-            .setTitle(if (organiserKey == null) "Become command phone" else "Command phone")
-            .setMessage("The key is never stored and is not in the app.")
-            .setView(input)
+        val holding = organiserKey != null
+        val view = dialogBody(
+            body = if (holding)
+                "This phone is holding the organiser key. It can issue official " +
+                    "instructions, and it is the phone that confirms urgent reports."
+            else
+                "Paste the organiser's private key to make this the command phone. " +
+                    "It can then issue official instructions that every other phone " +
+                    "can check, and it becomes the responder that confirms urgent reports.",
+            hint = "MEECAQAwEwYHKoZIzj0CAQYIKoZIzj0DAQcE...",
+            prefill = "",
+            note = "The key is never written to disk and is not inside the app. " +
+                "Close the app and this is an ordinary phone again.",
+            noteColour = Palette.TEAL
+        )
+        val input = view.findViewById<EditText>(R.id.etDialogInput)
+        dialog()
+            .setTitle(if (holding) "Command phone" else "Become the command phone")
+            .setView(view)
             .setPositiveButton("Set") { _, _ ->
-                val parsed = Authority.parsePrivateKey(input.text.toString())
+                // Strip every whitespace character, not just the ends. A key pasted from
+                // a chat app or a text file arrives wrapped across lines, and Base64
+                // decoding refuses that - which would look like "the key is wrong" on
+                // stage when the key is fine.
+                val typed = input.text.toString().replace(Regex("\\s"), "")
+                val parsed = Authority.parsePrivateKey(typed)
                 if (parsed == null) {
+                    // Said on screen, not only in the log: the log is behind a tab, and
+                    // a silently ignored key is the worst possible way to lose the trust
+                    // beat in front of a panel.
+                    Toast.makeText(
+                        this, "That is not a usable key - still an ordinary phone",
+                        Toast.LENGTH_LONG
+                    ).show()
                     log("That is not a usable key - still an ordinary phone")
                 } else {
                     organiserKey = parsed
@@ -604,8 +628,14 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val checked = known.map { nodeIdOf(it) in blocked }.toBooleanArray()
-        AlertDialog.Builder(this)
-            .setTitle("Cut these links (demo topology)")
+        dialog()
+            .setTitle("Cut these links")
+            // Ticked means "pretend this phone is out of range". Said plainly, because
+            // the whole point of the topology lock is that we are open about it on stage.
+            .setMessage(
+                "Three phones on one table all hear each other, so there is no hop to " +
+                    "show. Tick a phone to pretend it is out of range."
+            )
             .setMultiChoiceItems(known.toTypedArray(), checked) { _, which, isChecked ->
                 val n = nodeIdOf(known[which])
                 if (isChecked) blocked += n else blocked -= n
@@ -806,17 +836,19 @@ class MainActivity : AppCompatActivity() {
      */
     private fun askForTypedPlace() {
         if (isFinishing) return
-        val input = EditText(this).apply {
-            hint = "e.g. near the big red tent, north side"
-            setText(typedPlace ?: "")
-        }
-        AlertDialog.Builder(this)
+        val view = dialogBody(
+            body = "Your phone cannot get a satellite fix here - usually because of a " +
+                "roof. Describe where you are instead, and it will be sent with your reports.",
+            hint = "near the big red tent, north side",
+            prefill = typedPlace ?: "",
+            note = "A description gets a responder the last few metres that GPS cannot. " +
+                "Even at five metres accuracy, a crowd holds sixty people.",
+            noteColour = Palette.TEAL
+        )
+        val input = view.findViewById<EditText>(R.id.etDialogInput)
+        dialog()
             .setTitle("No GPS signal")
-            .setMessage(
-                "Your phone cannot get a satellite fix here - usually because of a roof. " +
-                    "Describe where you are instead, and it will be sent with your reports."
-            )
-            .setView(input)
+            .setView(view)
             .setPositiveButton("Use this") { _, _ ->
                 typedPlace = input.text.toString().trim().take(60).ifEmpty { null }
                 if (typedPlace != null) {
@@ -829,19 +861,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSimulatedPositionDialog() {
-        val input = EditText(this).apply {
-            hint = "17.38500, 78.48670"
-            setText(simulatedPosition?.encode() ?: "")
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Set position by hand (demo)")
-            .setMessage(
-                "Three phones on one table share one position, and indoors there is no " +
-                    "GPS fix at all. Setting it here makes the map meaningful. Say so on stage."
-            )
-            .setView(input)
+        val view = dialogBody(
+            body = "Type where this phone should claim to be, as latitude, longitude.",
+            hint = "17.38500, 78.48670",
+            prefill = simulatedPosition?.encode() ?: "",
+            note = "DEMO ONLY. Three phones on one table share a single position, and " +
+                "indoors none of them gets a GPS fix at all, so the map would show one " +
+                "dot and prove nothing. Say this out loud on stage rather than letting " +
+                "someone find it.",
+            noteColour = Palette.ORANGE
+        )
+        val input = view.findViewById<EditText>(R.id.etDialogInput)
+        dialog()
+            .setTitle("Set position by hand")
+            .setView(view)
             .setPositiveButton("Set") { _, _ ->
-                val p = Position.decode(input.text.toString().replace(" ", ""))
+                val p = Position.decode(input.text.toString().replace(Regex("\\s"), ""))
                 if (p == null) {
                     log("Could not read that as lat,lon")
                 } else {
@@ -864,6 +899,55 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------------
     // Screen furniture
     // ------------------------------------------------------------------
+
+    /**
+     * Every dialog in the app, on the app's own surface.
+     *
+     * Material's default alert sheet ignores the activity theme enough to come out pale,
+     * square and generic. Two of these dialogs are demo beats in their own right - the
+     * organiser key is the trust beat - so they cannot be the one place that looks
+     * borrowed from a different app.
+     */
+    private fun dialog() = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_MeshRelay_Dialog)
+
+    /**
+     * The body of an input dialog: what this does, the field, and the caveat.
+     *
+     * The caveat is not decoration. Both of these dialogs have an honest limit attached -
+     * the key is a single shared one with no way to cancel it, the hand-set position is
+     * a demo crutch - and putting that on screen where the thing happens is cheaper than
+     * remembering to say it, and better than a judge finding it first.
+     */
+    private fun dialogBody(
+        body: String,
+        hint: String,
+        prefill: String,
+        note: String? = null,
+        noteColour: Int = Palette.TEAL
+    ): View {
+        val view = layoutInflater.inflate(R.layout.dialog_input, null)
+        view.findViewById<TextView>(R.id.tvDialogBody).text = body
+        view.findViewById<EditText>(R.id.etDialogInput).apply {
+            this.hint = hint
+            setText(prefill)
+            setSelection(text.length)
+        }
+        val noteView = view.findViewById<TextView>(R.id.tvDialogNote)
+        if (note == null) {
+            noteView.visibility = View.GONE
+        } else {
+            noteView.visibility = View.VISIBLE
+            noteView.text = note
+            noteView.setTextColor(noteColour)
+            noteView.background = Palette.pill(
+                Palette.tint(noteColour, 26),
+                10f * resources.displayMetrics.density,
+                Palette.tint(noteColour, 70),
+                resources.displayMetrics.density.toInt()
+            )
+        }
+        return view
+    }
 
     /**
      * The report types, as buttons.
@@ -1023,21 +1107,26 @@ class MainActivity : AppCompatActivity() {
         val hint: String
 
         when {
+            // Not "OFFLINE". Nothing is broken - it has not been started. On a screen
+            // whose entire claim is "this works when everything else is down", the word
+            // offline is the wrong first thing a judge reads.
             !meshRunning -> {
                 colour = Palette.SLATE
-                state = "MESH OFFLINE"
-                hint = "Tap to start relaying"
+                state = "TAP TO JOIN THE NETWORK"
+                hint = "This phone is not carrying messages for anyone yet"
             }
+            // Silence is the normal state of a mesh between encounters, and this is a
+            // free chance to narrate store-and-forward before anyone has to explain it.
             peers == 0 -> {
                 colour = Palette.ORANGE
-                state = "SEARCHING"
-                hint = "Advertising and listening - no phone in range yet"
+                state = "LOOKING FOR PHONES"
+                hint = "No one in range. Anything you send waits here and goes out " +
+                    "the moment a phone appears"
             }
             else -> {
                 colour = Palette.TEAL
-                state = "MESH LIVE"
-                hint = peers.toString() + " phone" + (if (peers == 1) "" else "s") +
-                    " linked - carrying for the crowd"
+                state = "CONNECTED TO " + peers + " PHONE" + (if (peers == 1) "" else "S")
+                hint = "Passing messages on for people around you"
             }
         }
 
