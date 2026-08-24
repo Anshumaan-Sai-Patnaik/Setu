@@ -20,11 +20,20 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
 
     private var items: List<MeshMessage> = emptyList()
     private var own: Position? = null
+    private var myNodeId: String = ""
+    private var deliveryOf: (String) -> Delivery? = { null }
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
 
-    fun submit(list: List<MeshMessage>, ownPosition: Position? = null) {
+    fun submit(
+        list: List<MeshMessage>,
+        ownPosition: Position? = null,
+        myNode: String = "",
+        delivery: (String) -> Delivery? = { null }
+    ) {
         items = list
         own = ownPosition
+        myNodeId = myNode
+        deliveryOf = delivery
         notifyDataSetChanged()
     }
 
@@ -35,6 +44,7 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
         val head: TextView = view.findViewById(R.id.tvHead)
         val body: TextView = view.findViewById(R.id.tvBody)
         val meta: TextView = view.findViewById(R.id.tvMeta)
+        val receipt: TextView = view.findViewById(R.id.tvReceipt)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Row(
@@ -59,7 +69,7 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
             m.place != null -> "  -  " + m.place        // typed, when GPS could not be had
             else -> ""
         }
-        holder.head.text = m.type.label.uppercase() + where + badge
+        holder.head.text = m.type.tag + where + badge
         holder.head.setTextColor(colourFor(m.priority))
 
         holder.body.text = m.text
@@ -71,6 +81,36 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
             "   ttl " + m.ttl +
             "   copies " + m.copies +
             "\nvia " + m.path.joinToString(" > ") { it.take(4) }
+
+        showDeliveryState(holder, m)
+    }
+
+    /**
+     * Whether the report you sent got anywhere - shown only on your own reports, because
+     * it is only your own that you are waiting on. Everything else in this list arrived,
+     * by definition, so there is nothing to say about it.
+     *
+     * A message with no delivery record is one nobody promised to confirm: chatter and
+     * crowding reports, which are not worth a second message travelling back through the
+     * crowd. Those show nothing at all rather than a permanent "in flight" that would
+     * read as a failure.
+     */
+    private fun showDeliveryState(holder: Row, m: MeshMessage) {
+        val d = if (m.origin == myNodeId) deliveryOf(m.id) else null
+        if (d == null) {
+            holder.receipt.visibility = View.GONE
+            return
+        }
+        holder.receipt.visibility = View.VISIBLE
+        if (d.isDelivered) {
+            holder.receipt.text = "\u2713 DELIVERED  -  " + d.hops + " hop" +
+                (if (d.hops == 1) "" else "s") + "  -  confirmed in " + d.seconds + "s" +
+                "  -  by " + (d.by ?: "?").take(4)
+            holder.receipt.setTextColor(Color.parseColor("#2E7D32"))
+        } else {
+            holder.receipt.text = "in flight  -  no responder has confirmed it yet"
+            holder.receipt.setTextColor(Color.parseColor("#78909C"))
+        }
     }
 
     private fun colourFor(priority: Int) = when {

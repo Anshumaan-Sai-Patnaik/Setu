@@ -22,25 +22,46 @@ enum class MsgType(
     val priority: Int,
     val copyBudget: Int,
     val needsSignature: Boolean,
+    /** What the person choosing sees. Their words, not a category name. */
     val label: String,
+    /** Short form for the inbox and the map, where there is no room for a sentence. */
+    val tag: String,
     /** Plumbing, not a report. Never shown to a human, never rate limited. */
     val isPlumbing: Boolean = false
 ) {
-    // copyBudget is how much of the crowd's radio time this kind of message is allowed
-    // to spend. An emergency may spread widely. A question about the food stall may not.
+    // Wording matters more here than anywhere else in the app. Someone frightened is
+    // scanning, not reading, and they are looking for their own situation described back
+    // to them - not for the name of a category. "Medical" is a filing label and it is also
+    // ambiguous: does it mean I need a doctor, or I am one?
     //
-    // FLOOR OF 6, ALWAYS. The budget halves at every handover, and a phone holding the
-    // last copy stops spreading it. So a budget of 3 dies after ONE hop: the first relay
-    // receives 1 and refuses to pass it on. Found on hardware 21 Aug - INFO never
-    // reached the third phone while every other type did, which looked like a radio
-    // problem and was arithmetic. Reaching N hops needs roughly 2^N copies.
-    MEDICAL(10, 24, false, "Medical"),
-    AUTHORITY(10, 24, true, "OFFICIAL"),   // evacuation / crowd direction - signed only
-    MISSING(9, 16, false, "Missing person"),
-    FIRE(8, 16, false, "Fire"),
-    SECURITY(8, 16, false, "Security"),
-    CROWD(5, 8, false, "Crowding"),
-    INFO(1, 6, false, "Info"),
+    // Ordered by how likely someone is to need it, so the common case is at the top.
+    //
+    // copyBudget is how much of the crowd's radio time this kind of message may spend.
+    // FLOOR OF 6, ALWAYS. The budget halves at every handover and a phone holding the last
+    // copy stops spreading it, so a budget of 3 dies after ONE hop. Reaching N hops needs
+    // roughly 2^N copies.
+
+    MEDICAL(10, 24, false, "Someone is hurt or ill", "MEDICAL"),
+
+    MISSING(9, 16, false, "Someone is missing", "MISSING"),
+
+    // "Fire" alone makes people hesitate when what they can see is smoke.
+    FIRE(8, 16, false, "Fire or smoke", "FIRE"),
+
+    // "Security" is vague and sounds like a department. This is what it is for.
+    SECURITY(8, 16, false, "Violence or a threat", "THREAT"),
+
+    // "Dangerous" is the whole point - it separates a crush from a place merely being
+    // busy, and crowd crush is the thing that actually kills people at these events.
+    CROWD(5, 8, false, "Dangerous crowding", "CROWDING"),
+
+    // Naming it as not-an-emergency discourages using it for one, and discourages using
+    // an emergency type for this.
+    INFO(1, 6, false, "Question - not an emergency", "QUESTION"),
+
+    // Last, and marked, because an ordinary visitor has no business sending one. They can
+    // still try: it goes out unsigned and every phone refuses it, which is the demo.
+    AUTHORITY(10, 24, true, "Official instruction (staff)", "OFFICIAL"),
 
     /**
      * A location arriving late for a report that was already sent.
@@ -53,7 +74,25 @@ enum class MsgType(
      * Priority 9 so it chases the emergency it belongs to rather than queueing behind
      * chatter.
      */
-    LOCFIX(9, 16, false, "Location update", isPlumbing = true);
+    LOCFIX(9, 16, false, "Location update", "LOCATION", isPlumbing = true),
+
+    /**
+     * "It arrived." The answer to question 6 of the seven: *how does anyone ever know
+     * it arrived?*
+     *
+     * Sent by a responder when a report reaches a phone that can actually act on it,
+     * and pointed - by `ref` - back at the report it confirms. It floods home the same
+     * way everything else travels, because there is no return route to follow: the only
+     * phone that cares is the one that sent the original, and it recognises its own id.
+     *
+     * `text` carries one number: how many hops the original took to get there. The
+     * sender cannot work that out on its own, and it is the number that makes the
+     * confirmation mean something.
+     *
+     * Priority 9 so a confirmation is not stuck behind chatter. Plumbing, so it is never
+     * shown as a report and never counted against the rate limit.
+     */
+    RECEIPT(9, 16, false, "Delivery receipt", "RECEIPT", isPlumbing = true);
 
     companion object {
         fun from(name: String): MsgType? = entries.firstOrNull { it.name == name }
@@ -87,7 +126,7 @@ data class MeshMessage(
 // JavaScript in ten lines. The version tag comes first so a mixed-version demo fails
 // loudly rather than silently misreading fields.
 //
-//   v4|id|origin|TYPE|lat,lon|place|ref|ttl|copies|createdAt|a,b,c|sig|text
+//   v5|id|origin|TYPE|lat,lon|place|ref|ttl|copies|createdAt|a,b,c|sig|text
 //
 // The version is bumped whenever a field changes, and older builds are refused
 // outright rather than parsed loosely. Deliberate: a mixed-build demo
@@ -100,7 +139,7 @@ object Wire {
     private fun unesc(s: String) = s.replace("\\p", "|").replace("\\\\", "\\")
 
     fun encode(m: MeshMessage): String = listOf(
-        "v4",
+        "v5",
         m.id,
         m.origin,
         m.type.name,
@@ -118,7 +157,7 @@ object Wire {
     /** Returns null for anything malformed. A bad packet is dropped, never crashes a node. */
     fun decode(raw: String): MeshMessage? {
         val f = raw.split("|")
-        if (f.size != 13 || f[0] != "v4") return null
+        if (f.size != 13 || f[0] != "v5") return null
         val type = MsgType.from(f[3]) ?: return null
         return MeshMessage(
             id = f[1],
@@ -138,7 +177,56 @@ object Wire {
 }
 
 /** What the rules decided to do with an incoming message. */
-enum class Verdict { DUPLICATE, UNSIGNED_AUTHORITY, ACCEPTED }
+enum class Verdict {
+    DUPLICATE,
+    UNSIGNED_AUTHORITY,
+    ACCEPTED,
+
+    /**
+     * A receipt for something this phone sent, which has therefore reached the one
+     * phone in the crowd that was waiting for it. It is recorded and it stops here -
+     * not stored, not forwarded. Carrying it further would spend the crowd's radio time
+     * telling people something none of them asked about.
+     */
+    RECEIPT_FOR_ME
+}
+
+/**
+ * Which reports are worth confirming.
+ *
+ * Only urgent ones. A receipt is a whole extra message travelling back through the
+ * crowd, and confirming "where is the food stall" would spend real radio time on
+ * nothing - the same reasoning that already limits location follow-ups to priority 8+.
+ *
+ * AUTHORITY is excluded for a different reason: an order is a broadcast to everybody,
+ * so there is no single arrival to confirm, and the phone that would be confirming it
+ * is the phone that sent it.
+ */
+fun expectsReceipt(type: MsgType): Boolean =
+    !type.isPlumbing && type != MsgType.AUTHORITY && type.priority >= 8
+
+/**
+ * What this phone knows about one report it sent itself.
+ *
+ * The clock matters here. Both times are read from THIS phone's clock - when send was
+ * pressed, and when the confirmation came back - so nothing depends on two phones
+ * agreeing what time it is. That makes the number a round trip rather than a one-way
+ * delivery time, and it is the more useful number anyway: how long until the person who
+ * reported it knew that somebody had it.
+ */
+data class Delivery(
+    val messageId: String,
+    val sentAt: Long,
+    var confirmedAt: Long? = null,
+    /** Hops the original took to reach the responder, as counted by the responder. */
+    var hops: Int = 0,
+    /** Node id of the responder that confirmed it. */
+    var by: String? = null
+) {
+    val isDelivered: Boolean get() = confirmedAt != null
+
+    val seconds: Long get() = confirmedAt?.let { (it - sentAt + 500) / 1000 } ?: 0
+}
 
 // ---------------------------------------------------------------------------
 // The rules themselves.
@@ -161,9 +249,34 @@ class MeshRules(
     private val highPriorityOriginTimes = mutableListOf<Long>()
     private var counter = 0
 
+    /**
+     * Whether this phone is somewhere a report can actually be acted on, and therefore
+     * whether it confirms the reports it receives.
+     *
+     * A report has no address. It is not sent *to* anyone - it is spread until it finds
+     * someone who can help. So "delivered" cannot mean "reached the destination node",
+     * because there is no destination node. It means **it reached a responder**.
+     *
+     * On the demo phones that is the command phone, the one holding the organiser key,
+     * which is also the honest picture of a real deployment: reports are heading for the
+     * control room. A phone that cannot act on a report has no business telling anyone it
+     * arrived - if every phone confirmed, "delivered" would only mean "somebody nearby
+     * heard it", which is not what the person who sent it is asking.
+     */
+    var amResponder: Boolean = false
+
+    /**
+     * Reports this phone sent itself, and what came back. Insertion-ordered so the
+     * oldest is first if this is ever shown as a list.
+     */
+    private val outbox = LinkedHashMap<String, Delivery>()
+
     var duplicatesBlocked = 0; private set
     var evicted = 0; private set
     var forwards = 0; private set
+
+    /** Reports this phone sent that a responder has confirmed receiving. */
+    var confirmed = 0; private set
 
     fun storeSize() = store.size
 
@@ -220,6 +333,14 @@ class MeshRules(
         val m = if (signer == null) draft else draft.copy(sig = signer(draft))
         seen.add(m.id)
         insert(m)
+        // Start the clock on anything worth confirming. Until a receipt comes back this
+        // is what the sender's screen has to show as still in flight.
+        //
+        // Not on a responder's own reports. It is already sitting on the phone that a
+        // report is trying to reach, so there is nothing to wait for - and a row reading
+        // "in flight" forever on the command phone would look like a fault rather than a
+        // fact.
+        if (expectsReceipt(type) && !amResponder) outbox[m.id] = Delivery(m.id, now)
         return m
     }
 
@@ -229,7 +350,14 @@ class MeshRules(
      * Rule 1 of the whole system: seen it before, drop it silently.
      * Without this the crowd drowns in duplicates within seconds.
      */
-    fun onReceive(m: MeshMessage, fromNode: String?): Verdict {
+    fun onReceive(
+        m: MeshMessage,
+        fromNode: String?,
+        // Only used to time a confirmation against this phone's own clock. Defaulted so
+        // the rules can still be driven with nothing but a message, which is how every
+        // test and the simulator use them.
+        now: Long = System.currentTimeMillis()
+    ): Verdict {
         // Whoever handed it over obviously has it. Recording that here is what stops
         // the message being sent straight back where it came from - the "forward to
         // everyone except the sender" rule, kept in the rules rather than in the UI.
@@ -245,6 +373,24 @@ class MeshRules(
         // message type that could kill people, so it is never stored and never shown.
         if (m.type.needsSignature && !verifySignature(m)) {
             return Verdict.UNSIGNED_AUTHORITY
+        }
+
+        // A confirmation for something this phone sent. It has arrived at the only phone
+        // that was waiting for it, so it is recorded and goes no further. Receipts for
+        // other people's reports fall through and are relayed like anything else.
+        if (m.type == MsgType.RECEIPT && m.ref != null) {
+            val mine = outbox[m.ref]
+            if (mine != null) {
+                // First confirmation wins. A report can reach two responders, and the
+                // second one arriving does not make it any more delivered.
+                if (mine.confirmedAt == null) {
+                    mine.confirmedAt = now
+                    mine.hops = m.text.toIntOrNull() ?: 0
+                    mine.by = m.origin
+                    confirmed++
+                }
+                return Verdict.RECEIPT_FOR_ME
+            }
         }
 
         m.path.add(myNodeId)
@@ -276,6 +422,30 @@ class MeshRules(
             if (target.place == null && u.place != null) target.place = u.place
         }
     }
+
+    /**
+     * The confirmation to send back, or null if this phone has no business sending one.
+     *
+     * Called after a message has been accepted, so the hop count is read from a path
+     * that already includes this phone. A path of A > B > C is two hops.
+     *
+     * Deliberately NOT done inside onReceive: originating a message means putting it on
+     * the radio, and that decision stays visible at the call site next to every other
+     * send, rather than happening as a side effect of receiving something.
+     */
+    fun receiptFor(m: MeshMessage, now: Long): MeshMessage? {
+        if (!amResponder) return null
+        if (!expectsReceipt(m.type)) return null
+        if (m.origin == myNodeId) return null          // never confirm to yourself
+        val hops = (m.path.size - 1).coerceAtLeast(0)
+        return originate(MsgType.RECEIPT, hops.toString(), now, ref = m.id)
+    }
+
+    /** What came back about one report this phone sent, or null if it was not one worth confirming. */
+    fun deliveryOf(messageId: String): Delivery? = outbox[messageId]
+
+    /** How many reports this phone sent are still waiting to be confirmed. */
+    fun awaitingConfirmation(): Int = outbox.values.count { !it.isDelivered }
 
     /** Still worth handing on? TTL limits how far it travels; copies limits how many exist. */
     fun shouldForward(m: MeshMessage) = m.ttl > 0 && m.copies > 1

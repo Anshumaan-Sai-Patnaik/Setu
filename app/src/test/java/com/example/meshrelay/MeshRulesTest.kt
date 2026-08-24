@@ -73,7 +73,7 @@ class MeshRulesTest {
 
     @Test
     fun `a nonsense position is dropped, and the report still arrives`() {
-        val m = Wire.decode("v4|a-1|a|INFO|banana|||6|6|1|a||hello")
+        val m = Wire.decode("v5|a-1|a|INFO|banana|||6|6|1|a||hello")
         assertNotNull(m)
         assertNull(m!!.pos)
         assertEquals("hello", m.text)
@@ -95,6 +95,8 @@ class MeshRulesTest {
         assertNull(Wire.decode("v1|a-1|a|INFO|6|6|1|a||hello"))
         assertNull(Wire.decode("v2|a-1|a|INFO|GATE_3|6|6|1|a||hello"))
         assertNull(Wire.decode("v3|a-1|a|INFO|17.1,78.1|6|6|1|a||hello"))
+        // v4 is the build that had no delivery receipts in it.
+        assertNull(Wire.decode("v4|a-1|a|MEDICAL|17.1,78.1||||6|6|1|a||hello"))
     }
 
     @Test
@@ -456,6 +458,174 @@ class MeshRulesTest {
         val r = MeshRules(myNodeId = "me", verifySignature = { it.sig == "good" })
         val real = incoming("real-1", MsgType.AUTHORITY).copy(sig = "good")
         assertEquals(Verdict.ACCEPTED, r.onReceive(real, "them"))
+    }
+
+    // -----------------------------------------------------------------------
+    // Question 6 of the seven: how does anyone ever know it arrived?
+    // -----------------------------------------------------------------------
+
+    /** A phone that cannot act on a report has no business confirming it. */
+    @Test
+    fun `an ordinary phone never confirms anything`() {
+        val r = rules()
+        assertNull(r.receiptFor(incoming("a-1", MsgType.MEDICAL), 5000L))
+    }
+
+    @Test
+    fun `a responder confirms an urgent report, and says how far it travelled`() {
+        val r = rules()
+        r.amResponder = true
+        val m = incoming("a-1", MsgType.MEDICAL)
+        r.onReceive(m, "them")                       // path becomes them > me
+
+        val receipt = r.receiptFor(m, 5000L)
+        assertNotNull(receipt)
+        assertEquals(MsgType.RECEIPT, receipt!!.type)
+        assertEquals("a-1", receipt.ref)             // pointed back at the report
+        assertEquals("1", receipt.text)              // one hop
+        assertEquals("me", receipt.origin)
+    }
+
+    /**
+     * A receipt is a whole extra message travelling back through the crowd. Spending that
+     * on "where is the food stall" is spending the crowd's radio time on nothing - the
+     * same reasoning that already limits location follow-ups to urgent reports.
+     */
+    @Test
+    fun `only urgent reports are worth confirming`() {
+        assertTrue(expectsReceipt(MsgType.MEDICAL))
+        assertTrue(expectsReceipt(MsgType.MISSING))
+        assertTrue(expectsReceipt(MsgType.FIRE))
+        assertTrue(expectsReceipt(MsgType.SECURITY))
+        assertTrue(!expectsReceipt(MsgType.CROWD))
+        assertTrue(!expectsReceipt(MsgType.INFO))
+        // An order is a broadcast to everybody - there is no single arrival to confirm.
+        assertTrue(!expectsReceipt(MsgType.AUTHORITY))
+        // And plumbing must never trigger plumbing, or it never stops.
+        assertTrue(!expectsReceipt(MsgType.LOCFIX))
+        assertTrue(!expectsReceipt(MsgType.RECEIPT))
+    }
+
+    @Test
+    fun `a responder does not confirm a receipt, or its own report`() {
+        val r = rules()
+        r.amResponder = true
+
+        val ack = incoming("a-2", MsgType.RECEIPT)
+        r.onReceive(ack, "them")
+        assertNull(r.receiptFor(ack, 5000L))
+
+        val mine = r.originate(MsgType.MEDICAL, "help", 1000L)
+        assertNull(r.receiptFor(mine, 5000L))
+    }
+
+    @Test
+    fun `the sender's screen flips from in flight to delivered`() {
+        val r = rules()
+        val sent = r.originate(MsgType.MISSING, "Child, red shirt", 1000L)
+
+        val before = r.deliveryOf(sent.id)
+        assertNotNull(before)
+        assertTrue(!before!!.isDelivered)
+        assertEquals(1, r.awaitingConfirmation())
+
+        // The confirmation comes back, having been created by a responder two hops away.
+        val ack = MeshMessage(
+            "c-1", "responder", MsgType.RECEIPT, "2", null, null, sent.id,
+            1500L, 6, 6, mutableListOf("responder"), null
+        )
+        assertEquals(Verdict.RECEIPT_FOR_ME, r.onReceive(ack, "them", now = 42_000L))
+
+        val after = r.deliveryOf(sent.id)!!
+        assertTrue(after.isDelivered)
+        assertEquals(2, after.hops)
+        assertEquals("responder", after.by)
+        assertEquals(41L, after.seconds)     // this phone's own clock, start to finish
+        assertEquals(1, r.confirmed)
+        assertEquals(0, r.awaitingConfirmation())
+    }
+
+    /** It has reached the only phone that was waiting for it. Nobody else needs it. */
+    @Test
+    fun `a receipt stops at the phone it was meant for`() {
+        val r = rules()
+        val sent = r.originate(MsgType.MEDICAL, "help", 1000L)
+        val storedBefore = r.storeSize()
+
+        val ack = MeshMessage(
+            "c-1", "responder", MsgType.RECEIPT, "1", null, null, sent.id,
+            1500L, 6, 6, mutableListOf("responder"), null
+        )
+        r.onReceive(ack, "them", now = 2000L)
+
+        assertEquals(storedBefore, r.storeSize())            // not stored
+        assertTrue(r.flushOrder().none { it.id == "c-1" })   // and never handed on
+    }
+
+    /** Somebody else's confirmation is carried like any other message. */
+    @Test
+    fun `a receipt for someone else is relayed, not swallowed`() {
+        val r = rules()
+        val ack = MeshMessage(
+            "c-1", "responder", MsgType.RECEIPT, "1", null, null, "stranger-9",
+            1500L, 6, 6, mutableListOf("responder"), null
+        )
+        assertEquals(Verdict.ACCEPTED, r.onReceive(ack, "them"))
+        assertTrue(r.shouldForward(ack))
+        assertTrue(r.flushOrder().any { it.id == "c-1" })
+    }
+
+    /** Two responders can both get the report. The second one does not re-time it. */
+    @Test
+    fun `the first confirmation wins`() {
+        val r = rules()
+        val sent = r.originate(MsgType.MEDICAL, "help", 1000L)
+
+        fun ack(id: String, from: String, hops: String) = MeshMessage(
+            id, from, MsgType.RECEIPT, hops, null, null, sent.id,
+            1500L, 6, 6, mutableListOf(from), null
+        )
+        r.onReceive(ack("c-1", "first", "1"), "them", now = 3000L)
+        r.onReceive(ack("c-2", "second", "4"), "them", now = 90_000L)
+
+        val d = r.deliveryOf(sent.id)!!
+        assertEquals("first", d.by)
+        assertEquals(1, d.hops)
+        assertEquals(2L, d.seconds)
+        assertEquals(1, r.confirmed)
+    }
+
+    /** Confirming a report must never count against the sender's emergency allowance. */
+    @Test
+    fun `confirmations are not rate limited as emergencies`() {
+        val r = rules()
+        r.amResponder = true
+        val now = 10_000_000L
+        repeat(20) {
+            val m = incoming("a-$it", MsgType.MEDICAL)
+            r.onReceive(m, "them")
+            assertNotNull(r.receiptFor(m, now))
+        }
+        assertTrue(r.canOriginate(MsgType.MEDICAL, now))
+    }
+
+    /** A responder's own report is already where reports are trying to get to. */
+    @Test
+    fun `a responder does not wait on its own reports`() {
+        val r = rules()
+        r.amResponder = true
+        val m = r.originate(MsgType.MEDICAL, "help", 1000L)
+        assertNull(r.deliveryOf(m.id))
+        assertEquals(0, r.awaitingConfirmation())
+    }
+
+    /** Nothing is left in flight forever just because nobody promised to confirm it. */
+    @Test
+    fun `chatter is never left waiting for a confirmation`() {
+        val r = rules()
+        val info = r.originate(MsgType.INFO, "where is the food stall", 1000L)
+        assertNull(r.deliveryOf(info.id))
+        assertEquals(0, r.awaitingConfirmation())
     }
 
     @Test

@@ -404,6 +404,7 @@ class MainActivity : AppCompatActivity() {
             log(if (m.sig != null) "    signed as organiser" else "    NO KEY - this will be refused by every phone")
         }
         log("<<< SENT " + type.name + " p" + m.priority + " copies=" + m.copies + ": " + m.text)
+        if (expectsReceipt(type)) log("    in flight - waiting for a responder to confirm it")
         broadcast(m)
         rememberForLateLocation(m)
         updateStats()
@@ -469,6 +470,18 @@ class MainActivity : AppCompatActivity() {
                 Verdict.UNSIGNED_AUTHORITY ->
                     log("REFUSED unsigned OFFICIAL order from " + m.origin + " - not displayed")
 
+                // The answer to "how does anyone ever know it arrived?", arriving.
+                Verdict.RECEIPT_FOR_ME -> {
+                    val d = rules.deliveryOf(m.ref ?: "")
+                    log(
+                        "*** DELIVERED - a responder has the report you sent ***" +
+                            "\n    " + (d?.hops ?: 0) + " hop(s), confirmed " +
+                            (d?.seconds ?: 0) + "s after you sent it, by " +
+                            (d?.by ?: m.origin).take(4) +
+                            "\n    the receipt stops here - nobody else needs it"
+                    )
+                }
+
                 Verdict.ACCEPTED -> {
                     if (m.type.needsSignature) {
                         log("*** OFFICIAL ORDER - signature verified ***")
@@ -484,6 +497,14 @@ class MainActivity : AppCompatActivity() {
                         log("    stops here - travelled its full " + rules.hopLimit + " hops")
                     } else {
                         log("    stops here - last copy, kept but not spread further")
+                    }
+
+                    // This phone can act on the report, so it says so. The receipt floods
+                    // back the way the report came - there is no return route to follow -
+                    // and only the phone that sent the original keeps it.
+                    rules.receiptFor(m, System.currentTimeMillis())?.let { receipt ->
+                        log("    CONFIRMING - receipt on its way back to " + m.origin.take(4))
+                        broadcast(receipt)
                     }
                 }
             }
@@ -522,15 +543,19 @@ class MainActivity : AppCompatActivity() {
                     log("That is not a usable key - still an ordinary phone")
                 } else {
                     organiserKey = parsed
-                    tvName.text = "COMMAND - " + myName
+                    rules.amResponder = true
+                    tvName.text = "COMMAND CENTRE - " + myName
                     log("This phone can now issue OFFICIAL orders")
+                    log("It is also the responder: urgent reports reaching it get confirmed")
                 }
             }
             .setNegativeButton("Cancel", null)
             .setNeutralButton("Clear") { _, _ ->
                 organiserKey = null
+                rules.amResponder = false
                 tvName.text = "I am: " + myName
                 log("Organiser key cleared - ordinary phone again")
+                log("It no longer confirms reports")
             }
             .show()
     }
@@ -817,7 +842,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshInbox() {
         runOnUiThread {
             val held = rules.inboxOrder()
-            inbox.submit(held, currentPosition())
+            inbox.submit(held, currentPosition(), nodeId) { rules.deliveryOf(it) }
             mapView.show(held, currentPosition())
         }
     }
@@ -830,7 +855,9 @@ class MainActivity : AppCompatActivity() {
                 "   dup blocked " + rules.duplicatesBlocked +
                 "\nforwards " + rules.forwards +
                 "   evicted " + rules.evicted +
-                "   cut " + blocked.size
+                "   cut " + blocked.size +
+                "\nconfirmed " + rules.confirmed +
+                "   in flight " + rules.awaitingConfirmation()
         }
     }
 

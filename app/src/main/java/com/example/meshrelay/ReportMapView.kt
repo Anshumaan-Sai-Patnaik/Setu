@@ -212,7 +212,7 @@ class ReportMapView @JvmOverloads constructor(
         val d = targetDistance ?: return
         headline.color = colourFor(t.priority)
         canvas.drawText(
-            t.type.label.uppercase() + "   " + describeDistance(d),
+            t.type.tag + "   " + describeDistance(d),
             width * 0.04f, headline.textSize * 1.4f, headline
         )
         if (trend.isNotEmpty()) {

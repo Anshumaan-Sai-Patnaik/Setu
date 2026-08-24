@@ -38,5 +38,15 @@
             android:textSize="11sp"
             android:fontFamily="monospace"
             android:alpha="0.7" />
+
+        <!-- Only on reports this phone sent. The answer to "did it get there?" -->
+        <TextView
+            android:id="@+id/tvReceipt"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:paddingTop="2dp"
+            android:visibility="gone" />
     </LinearLayout>
 </LinearLayout>
