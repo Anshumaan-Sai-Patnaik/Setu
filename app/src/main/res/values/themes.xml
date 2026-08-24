@@ -1,9 +1,65 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+
+    <!--
+      Always dark, day or night. See values-night/themes.xml, which is deliberately
+      identical: this app is used outdoors after dark by someone who may be frightened,
+      and a phone that flips to a white screen at 2am is blinding and costs battery on
+      a device that is also relaying for other people.
+    -->
     <style name="Base.Theme.MeshRelay" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your light theme here. -->
-        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+        <item name="colorPrimary">@color/teal</item>
+        <item name="colorOnPrimary">@color/ground</item>
+        <item name="colorSecondary">@color/teal_deep</item>
+        <item name="colorError">@color/red</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="android:colorBackground">@color/ground</item>
+        <item name="android:windowBackground">@color/ground</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="android:textColorHint">@color/text_dim</item>
+        <item name="android:statusBarColor">@color/ground</item>
+        <item name="android:navigationBarColor">@color/ground</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
     </style>
 
     <style name="Theme.MeshRelay" parent="Base.Theme.MeshRelay" />
+
+    <!-- ================================================================
+         Text roles. Named for what they mean, not what they look like.
+         ================================================================ -->
+
+    <!-- Small caps, widely tracked. Labels a section without competing with it. -->
+    <style name="SectionLabel">
+        <item name="android:textSize">11sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.14</item>
+        <item name="android:textColor">@color/text_dim</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <!-- The number on a stat tile. Big enough to read from the judges' table. -->
+    <style name="StatValue">
+        <item name="android:textSize">26sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:includeFontPadding">false</item>
+    </style>
+
+    <style name="StatCaption">
+        <item name="android:textSize">9sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.10</item>
+        <item name="android:textColor">@color/text_dim</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <!-- Counters that are watched changing during the demo, so they are monospace:
+         digits must not shuffle sideways when 9 becomes 10. -->
+    <style name="MonoCounter">
+        <item name="android:textSize">11sp</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textColor">@color/text_secondary</item>
+    </style>
 </resources>

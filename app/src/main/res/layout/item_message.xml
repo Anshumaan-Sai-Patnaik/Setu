@@ -1,52 +1,118 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  One report. Read in this order from a metre away:
+
+    the colour  ->  what kind  ->  how far  ->  what it says  ->  the plumbing
+
+  The colour comes first on purpose. Someone scanning a full inbox for the one
+  thing that matters is looking for red before they are reading anything.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="horizontal"
-    android:paddingTop="6dp"
-    android:paddingBottom="6dp">
+    android:background="@drawable/bg_row"
+    android:layout_marginBottom="8dp"
+    android:padding="12dp">
 
     <!-- Urgency as a colour you can read across a table, not a number to decode. -->
     <View
         android:id="@+id/vStripe"
-        android:layout_width="6dp"
+        android:layout_width="4dp"
         android:layout_height="match_parent"
-        android:layout_marginEnd="10dp" />
+        android:layout_marginEnd="12dp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/tvHead"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textStyle="bold"
-            android:textSize="13sp" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <!-- The type, as a filled pill in its own priority colour. -->
+            <TextView
+                android:id="@+id/tvTag"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingStart="7dp"
+                android:paddingEnd="7dp"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08" />
+
+            <!-- Only on signed orders. An unsigned one never reaches this list at
+                 all - it is refused before it is stored. -->
+            <TextView
+                android:id="@+id/tvVerified"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:paddingStart="7dp"
+                android:paddingEnd="7dp"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:text="VERIFIED"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08"
+                android:visibility="gone" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <!-- Distance is what a dispatcher can act on. Raw coordinates are not. -->
+            <TextView
+                android:id="@+id/tvWhere"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_secondary"
+                android:maxLines="1"
+                android:ellipsize="end" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/tvBody"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="16sp" />
+            android:layout_marginTop="7dp"
+            android:textSize="15sp"
+            android:textColor="@color/text_primary"
+            android:lineSpacingExtra="2dp" />
 
+        <!-- The hidden rules made visible: how far it may still travel, how many
+             copies it may still spend, and the phones it physically passed through. -->
         <TextView
             android:id="@+id/tvMeta"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="11sp"
+            android:layout_marginTop="6dp"
+            android:textSize="10sp"
             android:fontFamily="monospace"
-            android:alpha="0.7" />
+            android:textColor="@color/text_dim"
+            android:lineSpacingExtra="1dp" />
 
         <!-- Only on reports this phone sent. The answer to "did it get there?" -->
         <TextView
             android:id="@+id/tvReceipt"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="12sp"
+            android:layout_marginTop="8dp"
+            android:paddingStart="9dp"
+            android:paddingEnd="9dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:textSize="11sp"
             android:textStyle="bold"
-            android:paddingTop="2dp"
             android:visibility="gone" />
     </LinearLayout>
 </LinearLayout>

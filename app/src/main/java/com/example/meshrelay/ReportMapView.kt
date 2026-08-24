@@ -2,10 +2,8 @@ package com.example.meshrelay
 
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.util.AttributeSet
-import android.util.TypedValue
 import android.view.View
 import kotlin.math.abs
 import kotlin.math.cos
@@ -60,6 +58,12 @@ class ReportMapView @JvmOverloads constructor(
     private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val note = Paint(Paint.ANTI_ALIAS_FLAG)
     private val headline = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFakeBoldText = true }
+    private val grid = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+    }
+    /** The halo around the worst report. Borrowed from every radar screen ever drawn. */
+    private val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
     fun show(messages: List<MeshMessage>, ownPosition: Position?) {
         own = ownPosition
@@ -104,18 +108,34 @@ class ReportMapView @JvmOverloads constructor(
         targetDistance = d
     }
 
-    private fun ink(): Int {
-        val v = TypedValue()
-        context.theme.resolveAttribute(android.R.attr.textColorPrimary, v, true)
-        return v.data
+    /**
+     * A faint grid. It carries no data - there is no basemap here and pretending
+     * otherwise would be dishonest - but a plot of dots on flat black gives the eye
+     * nothing to judge distance against, and the scale bar alone is not enough.
+     */
+    private fun drawGrid(canvas: Canvas) {
+        grid.color = Palette.tint(Palette.TEAL, 20)
+        val step = width / 8f
+        var x = step
+        while (x < width) {
+            canvas.drawLine(x, 0f, x, height.toFloat(), grid)
+            x += step
+        }
+        var y = step
+        while (y < height) {
+            canvas.drawLine(0f, y, width.toFloat(), y, grid)
+            y += step
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val solid = ink()
-        val faded = (solid and 0x00FFFFFF) or 0x99000000.toInt()
+        drawGrid(canvas)
+
+        val solid = Palette.TEXT
+        val faded = Palette.TEXT_DIM
         note.color = faded
-        label.color = Color.WHITE
+        label.color = Palette.GROUND
 
         val pad = width * 0.10f
         note.textSize = width * 0.032f
@@ -164,7 +184,7 @@ class ReportMapView @JvmOverloads constructor(
         val here = own
         val aim = target?.pos
         if (here != null && aim != null) {
-            leash.color = faded
+            leash.color = Palette.tint(Palette.TEAL, 130)
             canvas.drawLine(sx(here), sy(here), sx(aim), sy(aim), leash)
             targetDistance?.let { d ->
                 note.textAlign = Paint.Align.CENTER
@@ -178,19 +198,38 @@ class ReportMapView @JvmOverloads constructor(
             }
         }
 
+        // You are teal, because teal in this app is always "the network, and you are
+        // part of it". Reports are never teal, so your own dot can never be mistaken
+        // for an emergency.
         own?.let {
-            ring.color = solid
+            halo.color = Palette.tint(Palette.TEAL, 45)
+            canvas.drawCircle(sx(it), sy(it), width * 0.055f, halo)
+            ring.color = Palette.TEAL
             canvas.drawCircle(sx(it), sy(it), width * 0.030f, ring)
+            blip.color = Palette.TEAL
+            blip.alpha = 255
+            canvas.drawCircle(sx(it), sy(it), width * 0.012f, blip)
             note.textAlign = Paint.Align.CENTER
-            canvas.drawText("you", sx(it), sy(it) - width * 0.042f, note)
+            note.color = Palette.TEAL
+            canvas.drawText("you", sx(it), sy(it) - width * 0.070f, note)
+            note.color = faded
             note.textAlign = Paint.Align.LEFT
         }
 
         for ((pos, list) in groups) {
             val worst = list.maxOf { it.priority }
-            blip.color = colourFor(worst)
-            blip.alpha = 225
-            val r = width * (0.038f + 0.008f * minOf(list.size - 1, 4))
+            val colour = colourFor(worst)
+            val r = width * (0.034f + 0.008f * minOf(list.size - 1, 4))
+            // Only the genuinely critical get a halo. If everything glows, the glow
+            // stops meaning anything - the same reasoning that keeps red reserved.
+            if (worst >= 9) {
+                halo.color = Palette.tint(colour, 40)
+                canvas.drawCircle(sx(pos), sy(pos), r * 2.1f, halo)
+                halo.color = Palette.tint(colour, 55)
+                canvas.drawCircle(sx(pos), sy(pos), r * 1.5f, halo)
+            }
+            blip.color = colour
+            blip.alpha = 255
             canvas.drawCircle(sx(pos), sy(pos), r, blip)
             if (list.size > 1) {
                 canvas.drawText(
@@ -245,10 +284,5 @@ class ReportMapView @JvmOverloads constructor(
         return 5000.0
     }
 
-    private fun colourFor(priority: Int) = when {
-        priority >= 9 -> Color.parseColor("#D32F2F")
-        priority >= 8 -> Color.parseColor("#F57C00")
-        priority >= 5 -> Color.parseColor("#FBC02D")
-        else -> Color.parseColor("#78909C")
-    }
+    private fun colourFor(priority: Int) = Palette.forPriority(priority)
 }

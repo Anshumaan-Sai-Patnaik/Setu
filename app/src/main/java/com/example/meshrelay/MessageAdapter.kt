@@ -1,6 +1,5 @@
 package com.example.meshrelay
 
-import android.graphics.Color
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -41,10 +40,13 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
 
     class Row(view: View) : RecyclerView.ViewHolder(view) {
         val stripe: View = view.findViewById(R.id.vStripe)
-        val head: TextView = view.findViewById(R.id.tvHead)
+        val tag: TextView = view.findViewById(R.id.tvTag)
+        val verified: TextView = view.findViewById(R.id.tvVerified)
+        val where: TextView = view.findViewById(R.id.tvWhere)
         val body: TextView = view.findViewById(R.id.tvBody)
         val meta: TextView = view.findViewById(R.id.tvMeta)
         val receipt: TextView = view.findViewById(R.id.tvReceipt)
+        val density: Float = view.resources.displayMetrics.density
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Row(
@@ -53,30 +55,48 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
 
     override fun onBindViewHolder(holder: Row, position: Int) {
         val m = items[position]
+        val colour = Palette.forPriority(m.priority)
+        val dp = holder.density
 
-        holder.stripe.setBackgroundColor(colourFor(m.priority))
+        // The stripe is the first thing read and often the only thing read.
+        holder.stripe.background = Palette.pill(colour, 2f * dp)
 
-        // A verified order is marked as one. An unsigned order never reaches this list
-        // at all - it is refused before it is stored.
-        val badge = if (m.type.needsSignature) "  [VERIFIED ORDER]" else ""
+        // The type as a filled pill. A tinted fill rather than a solid one: seven
+        // saturated blocks in a list is noise, and the stripe already carries the
+        // urgency. The pill only has to name the thing.
+        holder.tag.text = m.type.tag
+        holder.tag.setTextColor(colour)
+        holder.tag.background = Palette.pill(
+            Palette.tint(colour, 38), 6f * dp, Palette.tint(colour, 90), (1 * dp).toInt()
+        )
+
+        // A verified order says so. An unsigned one never reaches this list at all -
+        // it is refused before it is stored, and it dies at the first honest phone.
+        val signed = m.type.needsSignature
+        holder.verified.visibility = if (signed) View.VISIBLE else View.GONE
+        if (signed) {
+            holder.verified.setTextColor(Palette.TEAL)
+            holder.verified.background = Palette.pill(
+                Palette.tint(Palette.TEAL, 38), 6f * dp,
+                Palette.tint(Palette.TEAL, 90), (1 * dp).toInt()
+            )
+        }
+
         // Distance is what a dispatcher can act on. Raw coordinates are not.
         val here = own
         val there = m.pos
-        val where = when {
-            there != null && here != null ->
-                "  -  " + describeDistance(Position.metresBetween(here, there))
-            there != null -> "  -  " + there.encode()
-            m.place != null -> "  -  " + m.place        // typed, when GPS could not be had
+        holder.where.text = when {
+            there != null && here != null -> describeDistance(Position.metresBetween(here, there))
+            there != null -> there.encode()
+            m.place != null -> m.place          // typed, when GPS could not be had
             else -> ""
         }
-        holder.head.text = m.type.tag + where + badge
-        holder.head.setTextColor(colourFor(m.priority))
 
         holder.body.text = m.text
 
-        // Shown because the hidden rules have to be visible to count for anything:
-        // how far it has left to travel, how many copies it may still spend, and the
-        // phones it physically passed through to get here.
+        // Shown because a rule the judges cannot see does not exist: how far it has
+        // left to travel, how many copies it may still spend, and the phones it
+        // physically passed through to get here.
         holder.meta.text = clock.format(Date(m.createdAt)) +
             "   ttl " + m.ttl +
             "   copies " + m.copies +
@@ -102,21 +122,27 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
             return
         }
         holder.receipt.visibility = View.VISIBLE
-        if (d.isDelivered) {
-            holder.receipt.text = "\u2713 DELIVERED  -  " + d.hops + " hop" +
-                (if (d.hops == 1) "" else "s") + "  -  confirmed in " + d.seconds + "s" +
-                "  -  by " + (d.by ?: "?").take(4)
-            holder.receipt.setTextColor(Color.parseColor("#2E7D32"))
-        } else {
-            holder.receipt.text = "in flight  -  no responder has confirmed it yet"
-            holder.receipt.setTextColor(Color.parseColor("#78909C"))
-        }
-    }
+        val dp = holder.density
 
-    private fun colourFor(priority: Int) = when {
-        priority >= 9 -> Color.parseColor("#D32F2F")   // medical, missing, orders
-        priority >= 8 -> Color.parseColor("#F57C00")   // fire, security
-        priority >= 5 -> Color.parseColor("#FBC02D")   // crowding
-        else -> Color.parseColor("#78909C")            // chatter
+        if (d.isDelivered) {
+            // Green appears in exactly one place in this app, and this is it.
+            holder.receipt.text = "✓  DELIVERED  ·  " + d.hops + " hop" +
+                (if (d.hops == 1) "" else "s") + "  ·  confirmed in " + d.seconds + "s" +
+                "  ·  by " + (d.by ?: "?").take(4)
+            holder.receipt.setTextColor(Palette.GREEN)
+            holder.receipt.background = Palette.pill(
+                Palette.tint(Palette.GREEN, 30), 8f * dp,
+                Palette.tint(Palette.GREEN, 80), (1 * dp).toInt()
+            )
+        } else {
+            // Orange, not red: waiting is not failure. It is the normal state of a
+            // message crossing a crowd, and it is the state a judge is watching change.
+            holder.receipt.text = "○  IN FLIGHT  ·  no responder has confirmed it yet"
+            holder.receipt.setTextColor(Palette.ORANGE)
+            holder.receipt.background = Palette.pill(
+                Palette.tint(Palette.ORANGE, 26), 8f * dp,
+                Palette.tint(Palette.ORANGE, 70), (1 * dp).toInt()
+            )
+        }
     }
 }

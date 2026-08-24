@@ -1,7 +1,22 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+<resources>
+    <!--
+      Identical to values/themes.xml on purpose. The app does not follow the system
+      theme - it is dark always. This file exists only so the night qualifier cannot
+      quietly pull in a Material default and hand a judge a white screen on stage.
+    -->
     <style name="Base.Theme.MeshRelay" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your dark theme here. -->
-        <!-- <item name="colorPrimary">@color/my_dark_primary</item> -->
+        <item name="colorPrimary">@color/teal</item>
+        <item name="colorOnPrimary">@color/ground</item>
+        <item name="colorSecondary">@color/teal_deep</item>
+        <item name="colorError">@color/red</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="android:colorBackground">@color/ground</item>
+        <item name="android:windowBackground">@color/ground</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="android:textColorHint">@color/text_dim</item>
+        <item name="android:statusBarColor">@color/ground</item>
+        <item name="android:navigationBarColor">@color/ground</item>
     </style>
 </resources>

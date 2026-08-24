@@ -1,5 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  One palette, defined once. Every colour in the app comes from here.
+
+  The app is always dark. Not a style choice: this is used outdoors at night, in a
+  crowd, by someone who may be frightened, and a white screen at 2am is both blinding
+  and a battery cost on a phone that is also acting as a relay.
+-->
 <resources>
+
+    <!-- ===== Ground and surfaces ===================================== -->
+    <!-- Infrastructure. The seriousness of the thing is carried by the background. -->
+    <color name="ground">#0B1220</color>
+    <color name="surface">#111C2E</color>
+    <color name="surface_raised">#16233A</color>
+    <color name="border">#1E2D45</color>
+    <color name="border_strong">#2A3D5C</color>
+
+    <!-- ===== Type ==================================================== -->
+    <color name="text_primary">#E6EDF7</color>
+    <color name="text_secondary">#8FA3BF</color>
+    <color name="text_dim">#5B6E8C</color>
+
+    <!-- ===== Connectivity ============================================
+         Teal is the network itself: links, live state, the app's own voice.
+         It is never used for a report, so teal on screen always means
+         "the mesh is doing something", never "something is wrong".        -->
+    <color name="teal">#14B8A6</color>
+    <color name="teal_deep">#0D9488</color>
+    <color name="teal_dark">#0B3B3A</color>
+
+    <!-- ===== Status ==================================================
+         Green is spent sparingly and means exactly one thing: confirmed.  -->
+    <color name="green">#22C55E</color>
+    <color name="green_dark">#0F3320</color>
+
+    <!-- ===== Alerts ==================================================
+         Orange is attention, not emergency. Searching, warnings, in flight. -->
+    <color name="orange">#F97316</color>
+    <color name="orange_dark">#3A1E08</color>
+    <color name="amber">#FBBF24</color>
+
+    <!-- ===== Danger ==================================================
+         Red is reserved. If everything urgent is red, nothing is.         -->
+    <color name="red">#EF4444</color>
+    <color name="red_dark">#3B1218</color>
+
+    <!-- ===== Priority bands ==========================================
+         The inbox stripe. These map to MeshRules priorities, not to types,
+         so a new type inherits its colour from what it costs the crowd.   -->
+    <color name="pri_critical">#EF4444</color>   <!-- 9+  medical, missing, orders -->
+    <color name="pri_urgent">#F97316</color>     <!-- 8   fire, threat -->
+    <color name="pri_elevated">#FBBF24</color>   <!-- 5   crowding -->
+    <color name="pri_routine">#64748B</color>    <!-- 1   questions, chatter -->
+
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

@@ -9,12 +9,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.widget.ArrayAdapter
-import android.widget.Button
+import android.view.View
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -53,24 +52,50 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvLog: TextView
     private lateinit var svLog: ScrollView
     private lateinit var etMessage: EditText
-    private lateinit var spType: Spinner
     private lateinit var rvInbox: RecyclerView
     private lateinit var tvPaneTitle: TextView
+    private lateinit var tvEmpty: TextView
     private lateinit var chkLoc: CheckBox
+    private lateinit var tvLocState: TextView
     private lateinit var mapView: ReportMapView
+
+    // The banner. One object that both states the mesh's condition and starts it.
+    private lateinit var cardMesh: View
+    private lateinit var vMeshDot: View
+    private lateinit var tvMeshState: TextView
+    private lateinit var tvMeshHint: TextView
+
+    // Counters, promoted from a monospace footnote to something readable across a room.
+    private lateinit var statsBlock: View
+    private lateinit var tvPeers: TextView
+    private lateinit var tvStored: TextView
+    private lateinit var tvStoredCaption: TextView
+    private lateinit var tvFlight: TextView
+
+    private lateinit var chipRow: LinearLayout
+    private lateinit var btnSend: TextView
+    private val tabs = mutableListOf<TextView>()
+
     private val inbox = MessageAdapter()
 
-    /** INBOX -> MAP -> LOG, cycled by one button. */
-    private enum class Pane(val title: String, val next: String) {
-        INBOX("INCOMING - most urgent first", "MAP"),
-        MAP("COMMAND CENTRE - reports by location", "LOG"),
-        LOG("DEBUG LOG", "INBOX")
+    /** The three things this phone can show. Named tabs, not a cycle. */
+    private enum class Pane(val title: String) {
+        INBOX("Incoming - most urgent first"),
+        MAP("Reports by location"),
+        LOG("Debug log")
     }
 
     private var pane = Pane.INBOX
 
     /** What a person may actually send. Excludes app plumbing such as location updates. */
     private val reportableTypes = MsgType.entries.filter { !it.isPlumbing }
+
+    /**
+     * Nothing is chosen until it is chosen. A pre-selected type means a panicking
+     * person sends "someone is hurt" when they meant "someone is missing", because
+     * the first option was already sitting there waiting.
+     */
+    private var selectedType: MsgType? = null
 
     // A permanent identity for this phone, created once on first launch and kept
     // afterwards. Used both to break connection ties and to tag messages.
@@ -145,36 +170,54 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         svLog = findViewById(R.id.svLog)
         etMessage = findViewById(R.id.etMessage)
-        spType = findViewById(R.id.spType)
         rvInbox = findViewById(R.id.rvInbox)
         tvPaneTitle = findViewById(R.id.tvPaneTitle)
+        tvEmpty = findViewById(R.id.tvEmpty)
         chkLoc = findViewById(R.id.chkLoc)
+        tvLocState = findViewById(R.id.tvLocState)
         mapView = findViewById(R.id.mapView)
+
+        cardMesh = findViewById(R.id.btnStart)
+        vMeshDot = findViewById(R.id.vMeshDot)
+        tvMeshState = findViewById(R.id.tvMeshState)
+        tvMeshHint = findViewById(R.id.tvMeshHint)
+
+        statsBlock = findViewById(R.id.statsBlock)
+        tvPeers = findViewById(R.id.tvPeers)
+        tvStored = findViewById(R.id.tvStored)
+        tvStoredCaption = findViewById(R.id.tvStoredCaption)
+        tvFlight = findViewById(R.id.tvFlight)
+
+        chipRow = findViewById(R.id.chipRow)
+        btnSend = findViewById(R.id.btnSend)
+
+        // The teal bar beside the wordmark. Drawn rather than shipped as an asset:
+        // the demo runs with no network and every byte in the APK is one we chose.
+        findViewById<View>(R.id.vBrandMark).background =
+            Palette.pill(Palette.TEAL, 2f * resources.displayMetrics.density)
 
         // Sharing a position is opt-in and starts OFF. This network copies messages onto
         // strangers phones and holds them for hours; that is the wrong place for anyone
         // exact whereabouts unless they chose it knowingly.
-        chkLoc.setOnCheckedChangeListener { _, on -> if (on) startLocation() else stopLocation() }
+        chkLoc.setOnCheckedChangeListener { _, on ->
+            if (on) startLocation() else stopLocation()
+            paintLocationState()
+        }
         chkLoc.setOnLongClickListener { showSimulatedPositionDialog(); true }
 
         rvInbox.layoutManager = LinearLayoutManager(this)
         rvInbox.adapter = inbox
 
-        tvName.text = "I am: " + myName
         connections = Nearby.getConnectionsClient(this)
 
         blocked += getSharedPreferences("meshrelay", MODE_PRIVATE)
             .getStringSet("blocked", emptySet()) ?: emptySet()
 
-        // The app assigns priority from the type. The user never types "URGENT".
-        // Plumbing types are not offered - they are sent by the app, not by a person.
-        spType.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            reportableTypes.map { it.label + "  (priority " + it.priority + ")" }
-        )
+        buildTypeChips()
+        buildTabs()
+        showOrdinaryPhone()
 
-        findViewById<Button>(R.id.btnStart).setOnClickListener {
+        cardMesh.setOnClickListener {
             if (meshRunning) {
                 log("Mesh is already running")
             } else {
@@ -183,11 +226,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<Button>(R.id.btnTopology).setOnClickListener { showTopologyDialog() }
-
-        // Error codes like 8012 mean something to us and nothing to a judge. They stay
-        // one tap away, not on screen during the demo (Plan.md 9, 22 Aug).
-        findViewById<Button>(R.id.btnView).setOnClickListener { toggleView() }
+        findViewById<TextView>(R.id.btnTopology).setOnClickListener { showTopologyDialog() }
 
         // Long-press the title to turn this phone into the command phone. Hidden
         // because it is a staff action, not something a visitor should ever find.
@@ -195,8 +234,9 @@ class MainActivity : AppCompatActivity() {
 
         // Eviction is invisible with room for 200 messages. Long-press the counters to
         // shrink the store to 10 so "the junk is dropped and the emergency survives"
-        // can actually be watched happening (Plan.md 17.2).
-        tvStats.setOnLongClickListener {
+        // can actually be watched happening (Plan.md 17.2). The whole block is the
+        // target, not just the small print - it has to be findable under pressure.
+        val shrinkStore = View.OnLongClickListener {
             rules.storeCap = if (rules.storeCap == 200) 10 else 200
             // Rehearsal sends more emergencies per hour than any real person would.
             rules.resetRateLimit()
@@ -205,16 +245,13 @@ class MainActivity : AppCompatActivity() {
             updateStats()
             true
         }
+        statsBlock.setOnLongClickListener(shrinkStore)
+        tvStats.setOnLongClickListener(shrinkStore)
 
-        findViewById<Button>(R.id.btnSend).setOnClickListener {
-            val text = etMessage.text.toString().trim()
-            if (text.isNotEmpty()) {
-                originateAndSend(reportableTypes[spType.selectedItemPosition], text)
-                etMessage.setText("")
-            }
-        }
+        btnSend.setOnClickListener { sendWhatIsTyped() }
+        etMessage.setOnEditorActionListener { _, _, _ -> sendWhatIsTyped(); true }
 
-        log("Ready. Tap START MESH.")
+        log("Ready. Tap the banner to start the mesh.")
         updateStats()
     }
 
@@ -544,7 +581,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     organiserKey = parsed
                     rules.amResponder = true
-                    tvName.text = "COMMAND CENTRE - " + myName
+                    showCommandPhone()
                     log("This phone can now issue OFFICIAL orders")
                     log("It is also the responder: urgent reports reaching it get confirmed")
                 }
@@ -553,7 +590,7 @@ class MainActivity : AppCompatActivity() {
             .setNeutralButton("Clear") { _, _ ->
                 organiserKey = null
                 rules.amResponder = false
-                tvName.text = "I am: " + myName
+                showOrdinaryPhone()
                 log("Organiser key cleared - ordinary phone again")
                 log("It no longer confirms reports")
             }
@@ -824,19 +861,194 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun toggleView() {
-        pane = when (pane) {
-            Pane.INBOX -> Pane.MAP
-            Pane.MAP -> Pane.LOG
-            Pane.LOG -> Pane.INBOX
+    // ------------------------------------------------------------------
+    // Screen furniture
+    // ------------------------------------------------------------------
+
+    /**
+     * The report types, as buttons.
+     *
+     * This was a dropdown until the design pass on 22 Aug. A dropdown hides six of
+     * the seven choices behind a tap, and it also quietly contradicts what we tell
+     * the judges: that the user never types importance and only picks from fixed
+     * options. If that is the claim, the options should be on screen.
+     *
+     * Each chip wears its own priority colour, so the cost of a choice is visible
+     * before it is made rather than explained afterwards.
+     */
+    private fun buildTypeChips() {
+        val dp = resources.displayMetrics.density
+        chipRow.removeAllViews()
+        for (type in reportableTypes) {
+            val chip = TextView(this).apply {
+                text = type.label
+                textSize = 12f
+                setPadding((13 * dp).toInt(), (9 * dp).toInt(), (13 * dp).toInt(), (9 * dp).toInt())
+                isSingleLine = true
+                setOnClickListener { selectType(type) }
+            }
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            if (chipRow.childCount > 0) lp.marginStart = (7 * dp).toInt()
+            chipRow.addView(chip, lp)
         }
-        fun vis(on: Boolean) = if (on) android.view.View.VISIBLE else android.view.View.GONE
+        paintChips()
+    }
+
+    private fun selectType(type: MsgType) {
+        selectedType = type
+        paintChips()
+        // Staff-only, and marked as such where it is chosen rather than after it fails.
+        if (type.needsSignature && organiserKey == null) {
+            log("This phone has no organiser key - that order will go out unsigned")
+            log("Every honest phone will refuse it. That is the point.")
+        }
+    }
+
+    private fun paintChips() {
+        val dp = resources.displayMetrics.density
+        reportableTypes.forEachIndexed { i, type ->
+            val chip = chipRow.getChildAt(i) as? TextView ?: return@forEachIndexed
+            val colour = Palette.forPriority(type.priority)
+            if (type == selectedType) {
+                // Chosen: solid, and dark text on it, so there is no doubt which one is armed.
+                chip.background = Palette.pill(colour, 10f * dp)
+                chip.setTextColor(Palette.GROUND)
+                chip.setTypeface(null, android.graphics.Typeface.BOLD)
+            } else {
+                chip.background = Palette.pill(
+                    Palette.tint(colour, 26), 10f * dp,
+                    Palette.tint(colour, 80), (1 * dp).toInt()
+                )
+                chip.setTextColor(Palette.TEXT_SECONDARY)
+                chip.setTypeface(null, android.graphics.Typeface.NORMAL)
+            }
+        }
+        paintSendButton()
+    }
+
+    /**
+     * SEND stays teal, not the colour of the chosen type. Teal means "the network is
+     * about to do something"; the report colours mean "this is how bad it is". Mixing
+     * them would make a medical report's SEND button look like an alert in its own right.
+     */
+    private fun paintSendButton() {
+        val dp = resources.displayMetrics.density
+        val armed = selectedType != null
+        btnSend.background = Palette.pill(
+            if (armed) Palette.TEAL else Palette.SURFACE_RAISED, 12f * dp,
+            if (armed) Palette.TEAL else Palette.BORDER_STRONG, (1 * dp).toInt()
+        )
+        btnSend.setTextColor(if (armed) Palette.GROUND else Palette.TEXT_DIM)
+    }
+
+    private fun sendWhatIsTyped() {
+        val text = etMessage.text.toString().trim()
+        val type = selectedType
+        if (type == null) {
+            log("Pick what is happening first")
+            return
+        }
+        if (text.isEmpty()) return
+        originateAndSend(type, text)
+        etMessage.setText("")
+    }
+
+    private fun buildTabs() {
+        tabs.clear()
+        tabs += findViewById<TextView>(R.id.tabInbox)
+        tabs += findViewById<TextView>(R.id.tabMap)
+        tabs += findViewById<TextView>(R.id.tabLog)
+        tabs[0].setOnClickListener { showPane(Pane.INBOX) }
+        tabs[1].setOnClickListener { showPane(Pane.MAP) }
+        tabs[2].setOnClickListener { showPane(Pane.LOG) }
+        showPane(Pane.INBOX)
+    }
+
+    /**
+     * Named tabs rather than one button cycling INBOX -> MAP -> LOG. On stage, tapping
+     * past the pane you wanted and having to go round again is a small thing that looks
+     * like a large one.
+     *
+     * The debug log keeps its own tab and stays off the main view: error codes like 8012
+     * mean something to us and nothing to a judge (Plan.md 9).
+     */
+    private fun showPane(target: Pane) {
+        pane = target
+        fun vis(on: Boolean) = if (on) View.VISIBLE else View.GONE
         rvInbox.visibility = vis(pane == Pane.INBOX)
         mapView.visibility = vis(pane == Pane.MAP)
         svLog.visibility = vis(pane == Pane.LOG)
         tvPaneTitle.text = pane.title
-        findViewById<Button>(R.id.btnView).text = pane.next
+        tabs.forEachIndexed { i, tab -> tab.isSelected = i == pane.ordinal }
         refreshInbox()
+    }
+
+    /** The identity badge, in its two states. Ordinary phone. */
+    private fun showOrdinaryPhone() {
+        val dp = resources.displayMetrics.density
+        tvName.text = myName
+        tvName.setTextColor(Palette.TEXT_SECONDARY)
+        tvName.background = Palette.pill(
+            Palette.SURFACE, 8f * dp, Palette.BORDER_STRONG, (1 * dp).toInt()
+        )
+    }
+
+    /**
+     * Command phone. Orange because it is an elevated state that someone should notice
+     * across a table - "this is the one holding the key" - without claiming an emergency.
+     */
+    private fun showCommandPhone() {
+        val dp = resources.displayMetrics.density
+        tvName.text = "COMMAND CENTRE"
+        tvName.setTextColor(Palette.ORANGE)
+        tvName.background = Palette.pill(
+            Palette.tint(Palette.ORANGE, 34), 8f * dp,
+            Palette.ORANGE, (1 * dp).toInt()
+        )
+    }
+
+    /**
+     * The banner. Three states, and the middle one matters most: "searching" is not a
+     * failure, it is what a mesh looks like between encounters, and saying so stops a
+     * silent screen reading as a broken app.
+     */
+    private fun paintMeshBanner() {
+        val dp = resources.displayMetrics.density
+        val peers = connected.size
+        val colour: Int
+        val state: String
+        val hint: String
+
+        when {
+            !meshRunning -> {
+                colour = Palette.SLATE
+                state = "MESH OFFLINE"
+                hint = "Tap to start relaying"
+            }
+            peers == 0 -> {
+                colour = Palette.ORANGE
+                state = "SEARCHING"
+                hint = "Advertising and listening - no phone in range yet"
+            }
+            else -> {
+                colour = Palette.TEAL
+                state = "MESH LIVE"
+                hint = peers.toString() + " phone" + (if (peers == 1) "" else "s") +
+                    " linked - carrying for the crowd"
+            }
+        }
+
+        cardMesh.background = Palette.pill(
+            Palette.tint(colour, 30), 14f * dp, Palette.tint(colour, 130), (1 * dp).toInt()
+        )
+        vMeshDot.background = Palette.dot(colour)
+        tvMeshState.text = state
+        tvMeshState.setTextColor(colour)
+        tvMeshHint.text = hint
+        tvMeshHint.setTextColor(Palette.TEXT_SECONDARY)
     }
 
     private fun refreshInbox() {
@@ -844,21 +1056,82 @@ class MainActivity : AppCompatActivity() {
             val held = rules.inboxOrder()
             inbox.submit(held, currentPosition(), nodeId) { rules.deliveryOf(it) }
             mapView.show(held, currentPosition())
+            // An empty list should say why it is empty. A blank panel during a demo
+            // reads as a crash for the two seconds before anyone explains it.
+            tvEmpty.visibility =
+                if (held.isEmpty() && pane == Pane.INBOX) View.VISIBLE else View.GONE
+            paintLocationState()
         }
     }
 
+    /**
+     * Whether this phone actually knows where it is - not merely whether the box is
+     * ticked. A cold GPS fix takes minutes and a phone that leans on Wi-Fi and cell
+     * towers gets nothing at all offline, and both failures are otherwise silent.
+     *
+     * Waiting is orange rather than red: a message never waits for a fix, so no fix
+     * is a smaller report, not a broken one.
+     */
+    private fun paintLocationState() {
+        if (!chkLoc.isChecked) {
+            tvLocState.text = "off"
+            tvLocState.setTextColor(Palette.TEXT_DIM)
+            return
+        }
+        val p = currentPosition()
+        if (p == null) {
+            tvLocState.text = "waiting for a fix"
+            tvLocState.setTextColor(Palette.ORANGE)
+        } else {
+            tvLocState.text = if (simulatedPosition != null) "set by hand" else "fix ok"
+            tvLocState.setTextColor(Palette.TEAL)
+        }
+    }
+
+    /**
+     * The decision layer's only visible output.
+     *
+     * Split into two ranks. The three tiles are what a person watching from three metres
+     * away can actually read, and they are the three that change during the demo. The
+     * monospace line underneath holds the rest - still on screen, because a rule the
+     * judges cannot see does not exist (Plan.md 17.2), but not competing for attention.
+     */
     private fun updateStats() {
         refreshInbox()
         runOnUiThread {
-            tvStats.text = "peers " + connected.size +
-                "   stored " + rules.storeSize() + "/" + rules.storeCap +
-                "   dup blocked " + rules.duplicatesBlocked +
-                "\nforwards " + rules.forwards +
+            paintMeshBanner()
+
+            tvPeers.text = connected.size.toString()
+            tvPeers.setTextColor(if (connected.isEmpty()) Palette.TEXT_DIM else Palette.TEAL)
+
+            tvStored.text = rules.storeSize().toString()
+            // The cap is in the caption rather than the number: "7" reads at a glance,
+            // "7/200" does not. When the store is squeezed to 10 for the eviction beat,
+            // the caption says DEMO out loud rather than letting it pass unnoticed.
+            val squeezed = rules.storeCap != 200
+            tvStoredCaption.text =
+                if (squeezed) "Carrying / " + rules.storeCap + " · DEMO" else "Carrying"
+            val full = rules.storeSize() >= rules.storeCap
+            tvStored.setTextColor(if (full) Palette.AMBER else Palette.TEXT)
+
+            val flight = rules.awaitingConfirmation()
+            tvFlight.text = flight.toString()
+            tvFlight.setTextColor(if (flight > 0) Palette.ORANGE else Palette.TEXT_DIM)
+            tvFlightCaptionText()
+
+            tvStats.text = "dup blocked " + rules.duplicatesBlocked +
+                "   forwards " + rules.forwards +
                 "   evicted " + rules.evicted +
-                "   cut " + blocked.size +
                 "\nconfirmed " + rules.confirmed +
-                "   in flight " + rules.awaitingConfirmation()
+                "   links cut " + blocked.size
         }
+    }
+
+    /** Confirmed is worth its own word once anything has been confirmed. */
+    private fun tvFlightCaptionText() {
+        val caption = findViewById<TextView>(R.id.tvFlightCaption)
+        caption.text = if (rules.confirmed > 0) "In flight · " + rules.confirmed + " done"
+        else "In flight"
     }
 
     private fun log(message: String) {
