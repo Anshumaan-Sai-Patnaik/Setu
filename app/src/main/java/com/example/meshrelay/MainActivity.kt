@@ -14,6 +14,8 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
@@ -28,6 +30,7 @@ import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
 import java.nio.charset.StandardCharsets
+import java.security.PrivateKey
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -46,6 +49,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var svLog: ScrollView
     private lateinit var etMessage: EditText
     private lateinit var spType: Spinner
+    private lateinit var rvInbox: RecyclerView
+    private lateinit var tvPaneTitle: TextView
+    private val inbox = MessageAdapter()
+    private var showingLog = false
 
     // A permanent identity for this phone, created once on first launch and kept
     // afterwards. Used both to break connection ties and to tag messages.
@@ -88,11 +95,15 @@ class MainActivity : AppCompatActivity() {
 
     // The decision layer. Everything interesting lives in MeshRules.kt.
     private val rules: MeshRules by lazy {
-        MeshRules(
-            myNodeId = nodeId,
-            verifySignature = { false }   // signing lands 22 Aug; until then nothing verifies
-        )
+        MeshRules(myNodeId = nodeId, verifySignature = { Authority.verify(it) })
     }
+
+    /**
+     * Set only on the designated command phone, and only by pasting the key in by hand.
+     * It is deliberately not saved to disk and not in the APK: a judge can decompile
+     * this app and still not be able to order a crowd to move.
+     */
+    private var organiserKey: PrivateKey? = null
 
     private val askPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -117,6 +128,11 @@ class MainActivity : AppCompatActivity() {
         svLog = findViewById(R.id.svLog)
         etMessage = findViewById(R.id.etMessage)
         spType = findViewById(R.id.spType)
+        rvInbox = findViewById(R.id.rvInbox)
+        tvPaneTitle = findViewById(R.id.tvPaneTitle)
+
+        rvInbox.layoutManager = LinearLayoutManager(this)
+        rvInbox.adapter = inbox
 
         tvName.text = "I am: " + myName
         connections = Nearby.getConnectionsClient(this)
@@ -141,6 +157,24 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnTopology).setOnClickListener { showTopologyDialog() }
+
+        // Error codes like 8012 mean something to us and nothing to a judge. They stay
+        // one tap away, not on screen during the demo (Plan.md 9, 22 Aug).
+        findViewById<Button>(R.id.btnView).setOnClickListener { toggleView() }
+
+        // Long-press the title to turn this phone into the command phone. Hidden
+        // because it is a staff action, not something a visitor should ever find.
+        tvName.setOnLongClickListener { showKeyDialog(); true }
+
+        // Eviction is invisible with room for 200 messages. Long-press the counters to
+        // shrink the store to 10 so "the junk is dropped and the emergency survives"
+        // can actually be watched happening (Plan.md 17.2).
+        tvStats.setOnLongClickListener {
+            rules.storeCap = if (rules.storeCap == 200) 10 else 200
+            log("Store cap now " + rules.storeCap + (if (rules.storeCap == 10) " (DEMO)" else ""))
+            updateStats()
+            true
+        }
 
         findViewById<Button>(R.id.btnSend).setOnClickListener {
             val text = etMessage.text.toString().trim()
@@ -316,7 +350,18 @@ class MainActivity : AppCompatActivity() {
             log("RATE LIMITED: too many urgent messages from this phone in the last hour")
             return
         }
-        val m = rules.originate(type, text, now)
+        // Only the command phone holds a key, so only the command phone can produce an
+        // order. Every other phone can still type one - it just goes out unsigned and
+        // gets refused by everyone who receives it.
+        val key = organiserKey
+        val signer: ((MeshMessage) -> String?)? =
+            if (type.needsSignature && key != null) { draft -> Authority.sign(draft, key) }
+            else null
+
+        val m = rules.originate(type, text, now, signer)
+        if (type.needsSignature) {
+            log(if (m.sig != null) "    signed as organiser" else "    NO KEY - this will be refused by every phone")
+        }
         log("<<< SENT " + type.name + " p" + m.priority + " copies=" + m.copies + ": " + m.text)
         broadcast(m)
         updateStats()
@@ -383,6 +428,9 @@ class MainActivity : AppCompatActivity() {
                     log("REFUSED unsigned OFFICIAL order from " + m.origin + " - not displayed")
 
                 Verdict.ACCEPTED -> {
+                    if (m.type.needsSignature) {
+                        log("*** OFFICIAL ORDER - signature verified ***")
+                    }
                     log(
                         ">>> " + m.type.name + " p" + m.priority + ": " + m.text +
                             "\n    ttl=" + m.ttl + " copies=" + m.copies +
@@ -408,6 +456,42 @@ class MainActivity : AppCompatActivity() {
     // -----------------------------------------------------------------------
     // Topology lock + counters
     // -----------------------------------------------------------------------
+
+    /**
+     * Turns this phone into the command phone by pasting in the organiser's private key.
+     * Nothing is written to disk - close the app and it is an ordinary phone again.
+     *
+     * Honest limit, worth saying before a judge asks (Plan.md 17.4): a real deployment
+     * issues a key per staff member at accreditation and needs a way to cancel a stolen
+     * one. That is not built.
+     */
+    private fun showKeyDialog() {
+        val input = EditText(this).apply {
+            hint = "Paste organiser private key"
+            setText(organiserKey?.let { "" } ?: "")
+        }
+        AlertDialog.Builder(this)
+            .setTitle(if (organiserKey == null) "Become command phone" else "Command phone")
+            .setMessage("The key is never stored and is not in the app.")
+            .setView(input)
+            .setPositiveButton("Set") { _, _ ->
+                val parsed = Authority.parsePrivateKey(input.text.toString())
+                if (parsed == null) {
+                    log("That is not a usable key - still an ordinary phone")
+                } else {
+                    organiserKey = parsed
+                    tvName.text = "COMMAND - " + myName
+                    log("This phone can now issue OFFICIAL orders")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Clear") { _, _ ->
+                organiserKey = null
+                tvName.text = "I am: " + myName
+                log("Organiser key cleared - ordinary phone again")
+            }
+            .show()
+    }
 
     private fun showTopologyDialog() {
         val known = peerNames.values.distinct().sorted()
@@ -441,10 +525,24 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun toggleView() {
+        showingLog = !showingLog
+        svLog.visibility = if (showingLog) android.view.View.VISIBLE else android.view.View.GONE
+        rvInbox.visibility = if (showingLog) android.view.View.GONE else android.view.View.VISIBLE
+        tvPaneTitle.text =
+            if (showingLog) "DEBUG LOG" else "INCOMING - most urgent first"
+        findViewById<Button>(R.id.btnView).text = if (showingLog) "INBOX" else "LOG"
+    }
+
+    private fun refreshInbox() {
+        runOnUiThread { inbox.submit(rules.inboxOrder()) }
+    }
+
     private fun updateStats() {
+        refreshInbox()
         runOnUiThread {
             tvStats.text = "peers " + connected.size +
-                "   stored " + rules.storeSize() +
+                "   stored " + rules.storeSize() + "/" + rules.storeCap +
                 "   dup blocked " + rules.duplicatesBlocked +
                 "\nforwards " + rules.forwards +
                 "   evicted " + rules.evicted +

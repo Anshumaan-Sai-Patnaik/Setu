@@ -143,9 +143,20 @@ class MeshRules(
         return highPriorityOriginTimes.size < highPriorityPerHour
     }
 
-    fun originate(type: MsgType, text: String, now: Long, sig: String? = null): MeshMessage {
+    /**
+     * The signer is passed in rather than called directly, so this file keeps no
+     * knowledge of crypto or of Android and can still be ported to the simulator.
+     * A phone with no key signs nothing - and that is the whole point of the demo:
+     * it can still *type* an evacuation order, it just cannot make one anybody obeys.
+     */
+    fun originate(
+        type: MsgType,
+        text: String,
+        now: Long,
+        signer: ((MeshMessage) -> String?)? = null
+    ): MeshMessage {
         if (type.priority >= 8) highPriorityOriginTimes.add(now)
-        val m = MeshMessage(
+        val draft = MeshMessage(
             id = myNodeId + "-" + (++counter),
             origin = myNodeId,
             type = type,
@@ -154,8 +165,10 @@ class MeshRules(
             ttl = hopLimit,
             copies = type.copyBudget,
             path = mutableListOf(myNodeId),
-            sig = sig
+            sig = null
         )
+        // Signed after the id and timestamp exist, because both are inside the signature.
+        val m = if (signer == null) draft else draft.copy(sig = signer(draft))
         seen.add(m.id)
         insert(m)
         return m

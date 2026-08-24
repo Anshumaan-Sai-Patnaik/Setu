@@ -38,6 +38,9 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
+    // Declared explicitly rather than relied on arriving through Material, so a future
+    // Material change cannot silently remove it.
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
