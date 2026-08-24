@@ -13,22 +13,49 @@
         android:layout_height="wrap_content"
         android:text="Starting..."
         android:textSize="16sp"
-        android:textStyle="bold"
-        android:paddingBottom="8dp" />
+        android:textStyle="bold" />
 
-    <Button
-        android:id="@+id/btnStart"
+    <!-- Counters. A rule the judges cannot see does not exist (Plan.md 17.2). -->
+    <TextView
+        android:id="@+id/tvStats"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="START MESH" />
+        android:textSize="13sp"
+        android:fontFamily="monospace"
+        android:paddingBottom="8dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnStart"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="START MESH" />
+
+        <Button
+            android:id="@+id/btnTopology"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="LINKS" />
+    </LinearLayout>
+
+    <Spinner
+        android:id="@+id/spType"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" />
 
     <EditText
         android:id="@+id/etMessage"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="Type a message"
+        android:hint="What is happening?"
         android:inputType="text"
-        android:layout_marginTop="8dp" />
+        android:maxLength="180" />
 
     <Button
         android:id="@+id/btnSend"

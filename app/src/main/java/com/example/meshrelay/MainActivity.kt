@@ -3,11 +3,16 @@ package com.example.meshrelay
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
@@ -26,21 +31,68 @@ import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
-    // Every device must use the same SERVICE_ID or they will never find each other.
+    // Must be byte-identical on every device or they will never find each other.
     private val serviceId = "com.example.meshrelay.SERVICE"
     private val strategy = Strategy.P2P_CLUSTER
 
     private lateinit var connections: ConnectionsClient
     private lateinit var tvName: TextView
+    private lateinit var tvStats: TextView
     private lateinit var tvLog: TextView
     private lateinit var svLog: ScrollView
     private lateinit var etMessage: EditText
+    private lateinit var spType: Spinner
 
-    private val myName = Build.MODEL + "-" + (100..999).random()
+    // A permanent identity for this phone, created once on first launch and kept
+    // afterwards. Used both to break connection ties and to tag messages.
+    private val nodeId: String by lazy {
+        val prefs = getSharedPreferences("meshrelay", MODE_PRIVATE)
+        var id = prefs.getString("nodeId", null)
+        if (id == null) {
+            id = UUID.randomUUID().toString().replace("-", "").substring(0, 12)
+            prefs.edit().putString("nodeId", id).apply()
+        }
+        id
+    }
+
+    private val myName: String by lazy { Build.MODEL + "-" + nodeId }
+
+    // The node ID is the part after the last dash, so this works even if a phone
+    // model name contains dashes of its own.
+    private fun nodeIdOf(endpointName: String) = endpointName.substringAfterLast('-')
+
     private val connected = mutableSetOf<String>()
+    private val dialling = mutableSetOf<String>()
+    private val peerNames = mutableMapOf<String, String>()   // endpointId -> endpointName
+
+    // Nearby hands out a fresh endpoint ID every time it rediscovers a phone, so the
+    // same physical phone can appear under two IDs at once and get dialled twice.
+    // Identity is the node ID, not the endpoint ID - track links by that.
+    private val connectedNodes = mutableSetOf<String>()
+    private val diallingNodes = mutableSetOf<String>()
+
+    private fun nodeOf(endpointId: String) = nodeIdOf(peerNames[endpointId] ?: "")
+    private val handler = Handler(Looper.getMainLooper())
+    private var meshRunning = false
+
+    /**
+     * Topology lock (Plan.md 11). All three phones sit on one table and can all hear
+     * each other, so there would be no hop to demonstrate. Blocking a node ID here cuts
+     * that link in software. This is stated out loud on stage, never hidden.
+     */
+    private val blocked = mutableSetOf<String>()
+
+    // The decision layer. Everything interesting lives in MeshRules.kt.
+    private val rules: MeshRules by lazy {
+        MeshRules(
+            myNodeId = nodeId,
+            verifySignature = { false }   // signing lands 22 Aug; until then nothing verifies
+        )
+    }
 
     private val askPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -60,27 +112,46 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         tvName = findViewById(R.id.tvName)
+        tvStats = findViewById(R.id.tvStats)
         tvLog = findViewById(R.id.tvLog)
         svLog = findViewById(R.id.svLog)
         etMessage = findViewById(R.id.etMessage)
+        spType = findViewById(R.id.spType)
 
-        tvName.text = "I am: $myName"
+        tvName.text = "I am: " + myName
         connections = Nearby.getConnectionsClient(this)
 
+        blocked += getSharedPreferences("meshrelay", MODE_PRIVATE)
+            .getStringSet("blocked", emptySet()) ?: emptySet()
+
+        // The app assigns priority from the type. The user never types "URGENT".
+        spType.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            MsgType.entries.map { it.label + "  (priority " + it.priority + ")" }
+        )
+
         findViewById<Button>(R.id.btnStart).setOnClickListener {
-            log("Requesting permissions...")
-            askPermissions.launch(requiredPermissions())
+            if (meshRunning) {
+                log("Mesh is already running")
+            } else {
+                log("Requesting permissions...")
+                askPermissions.launch(requiredPermissions())
+            }
         }
+
+        findViewById<Button>(R.id.btnTopology).setOnClickListener { showTopologyDialog() }
 
         findViewById<Button>(R.id.btnSend).setOnClickListener {
             val text = etMessage.text.toString().trim()
             if (text.isNotEmpty()) {
-                sendToAll(text)
+                originateAndSend(MsgType.entries[spType.selectedItemPosition], text)
                 etMessage.setText("")
             }
         }
 
         log("Ready. Tap START MESH.")
+        updateStats()
     }
 
     private fun requiredPermissions(): Array<String> {
@@ -97,6 +168,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startMesh() {
+        meshRunning = true
+
         connections.startAdvertising(
             myName,
             serviceId,
@@ -104,7 +177,7 @@ class MainActivity : AppCompatActivity() {
             AdvertisingOptions.Builder().setStrategy(strategy).build()
         )
             .addOnSuccessListener { log("ADVERTISING started") }
-            .addOnFailureListener { log("ADVERTISING failed: ${it.message}") }
+            .addOnFailureListener { log("ADVERTISING failed: " + it.message) }
 
         connections.startDiscovery(
             serviceId,
@@ -112,46 +185,219 @@ class MainActivity : AppCompatActivity() {
             DiscoveryOptions.Builder().setStrategy(strategy).build()
         )
             .addOnSuccessListener { log("DISCOVERY started") }
-            .addOnFailureListener { log("DISCOVERY failed: ${it.message}") }
+            .addOnFailureListener { log("DISCOVERY failed: " + it.message) }
     }
 
     private val endpointDiscovery = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            log("FOUND ${info.endpointName} -> requesting connection")
-            connections.requestConnection(myName, endpointId, connectionLifecycle)
-                .addOnFailureListener { log("requestConnection failed: ${it.message}") }
+            val theirName = info.endpointName
+            val theirNode = nodeIdOf(theirName)
+            peerNames[endpointId] = theirName
+            log("FOUND " + theirName)
+
+            if (theirNode in blocked) {
+                log("IGNORING " + theirNode + " (topology lock)")
+                return
+            }
+            // Already linked to this phone, or already calling it - possibly under an
+            // older endpoint ID. Dialling again is what produced the retry storm.
+            if (theirNode in connectedNodes || theirNode in diallingNodes) return
+            if (endpointId in connected || endpointId in dialling) return
+
+            // Only ONE side may dial, or the two requests collide (error 8012).
+            // Compare the random node IDs, NOT the full names: the name begins with
+            // the model, so comparing names would make one model always the dialler.
+            // Comparing random IDs spreads the role evenly across devices.
+            log("Linking with " + theirName + "...")
+
+            if (nodeId < theirNode) {
+                dialling += endpointId
+                diallingNodes += theirNode
+                dial(endpointId, theirName, 1)
+            } else {
+                // The other side dials. Safety net: if its call never arrives,
+                // dial anyway rather than both sides waiting forever.
+                handler.postDelayed({
+                    if (theirNode !in connectedNodes && theirNode !in diallingNodes &&
+                        theirNode !in blocked
+                    ) {
+                        log("Still linking with " + theirName + "...")
+                        dialling += endpointId
+                        diallingNodes += theirNode
+                        dial(endpointId, theirName, 1)
+                    }
+                }, 12000L)
+            }
         }
 
         override fun onEndpointLost(endpointId: String) {
-            log("LOST $endpointId")
+            dialling -= endpointId
+            diallingNodes -= nodeOf(endpointId)
+            log("LOST " + (peerNames[endpointId] ?: endpointId))
         }
+    }
+
+    private fun dial(endpointId: String, theirName: String, attempt: Int) {
+        val theirNode = nodeIdOf(theirName)
+
+        // The call may have already been answered from the other direction while this
+        // attempt was in flight. Retrying then, and eventually announcing "could not
+        // link" about a phone we are talking to, is alarming and wrong.
+        if (theirNode in connectedNodes) {
+            dialling -= endpointId
+            diallingNodes -= theirNode
+            return
+        }
+
+        connections.requestConnection(myName, endpointId, connectionLifecycle)
+            .addOnFailureListener {
+                if (theirNode in connectedNodes) {
+                    dialling -= endpointId
+                    diallingNodes -= theirNode
+                } else if (attempt < 5) {
+                    // Randomised, growing delay. Genuine radio failures (someone walked
+                    // out of range, Bluetooth stuttered) are common; retrying on a fixed
+                    // timer would make several phones retry in lockstep.
+                    val wait = (1000L * attempt) + (0..1500).random()
+                    log("Retrying link with " + theirName + " (" + (attempt + 1) + "/5)")
+                    handler.postDelayed({ dial(endpointId, theirName, attempt + 1) }, wait)
+                } else {
+                    dialling -= endpointId
+                    diallingNodes -= theirNode
+                    log("Could not link with " + theirName)
+                }
+            }
     }
 
     private val connectionLifecycle = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            log("Handshake with ${info.endpointName} - accepting")
+            peerNames[endpointId] = info.endpointName
+            if (nodeIdOf(info.endpointName) in blocked) {
+                log("REFUSING " + info.endpointName + " (topology lock)")
+                connections.rejectConnection(endpointId)
+                return
+            }
+            log("Handshake with " + info.endpointName + " - accepting")
             connections.acceptConnection(endpointId, payloadCallback)
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
+            val theirNode = nodeOf(endpointId)
+            dialling -= endpointId
+            diallingNodes -= theirNode
             if (result.status.isSuccess) {
                 connected += endpointId
-                log("CONNECTED (${connected.size} peer(s))")
+                connectedNodes += theirNode
+                log("*** CONNECTED *** (" + connected.size + " peer(s))")
+                flushTo(endpointId)
             } else {
-                log("Connection failed: code ${result.status.statusCode}")
+                log("Connect failed: code " + result.status.statusCode)
             }
+            updateStats()
         }
 
         override fun onDisconnected(endpointId: String) {
+            val theirNode = nodeOf(endpointId)
             connected -= endpointId
-            log("DISCONNECTED (${connected.size} peer(s))")
+            // Only forget the phone if no other endpoint ID for it is still live.
+            if (connected.none { nodeOf(it) == theirNode }) connectedNodes -= theirNode
+            log("DISCONNECTED (" + connected.size + " peer(s))")
+            updateStats()
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Message layer
+    // -----------------------------------------------------------------------
+
+    private fun originateAndSend(type: MsgType, text: String) {
+        val now = System.currentTimeMillis()
+        if (!rules.canOriginate(type, now)) {
+            log("RATE LIMITED: too many urgent messages from this phone in the last hour")
+            return
+        }
+        val m = rules.originate(type, text, now)
+        log("<<< SENT " + type.name + " p" + m.priority + " copies=" + m.copies + ": " + m.text)
+        broadcast(m)
+        updateStats()
+    }
+
+    /**
+     * Offer the message to every connected peer. The rules decide who actually gets it:
+     * a peer that already holds it is skipped and costs nothing (Plan.md 8.2).
+     */
+    private fun broadcast(m: MeshMessage) {
+        if (connected.isEmpty()) {
+            log("    held - no peers in range (will flush on next contact)")
+            return
+        }
+        var handed = 0
+        for (target in connected.toList()) if (handOver(m, target)) handed++
+        if (handed == 0) {
+            log("    nothing to hand on - peers already have it, or copies are spent")
+        }
+    }
+
+    /**
+     * Hand one copy to one peer, spending half this phone's copy budget on it.
+     * Returns false if that peer already has it or the budget is gone.
+     */
+    private fun handOver(m: MeshMessage, endpointId: String): Boolean {
+        val peerNode = nodeIdOf(peerNames[endpointId] ?: return false)
+        val give = rules.splitCopiesFor(m, peerNode)
+        if (give < 1) return false
+        val outgoing = m.copy(path = m.path.toMutableList()).also { it.copies = give }
+        val payload = Payload.fromBytes(Wire.encode(outgoing).toByteArray(StandardCharsets.UTF_8))
+        connections.sendPayload(listOf(endpointId), payload)
+        rules.markForwarded(m)
+        return true
+    }
+
+    /**
+     * Store-and-forward. A new peer just appeared: hand it everything still live,
+     * most urgent first. This is what makes the network work with no end-to-end path.
+     */
+    private fun flushTo(endpointId: String) {
+        val peerNode = nodeIdOf(peerNames[endpointId] ?: return)
+        val pending = rules.flushOrderFor(peerNode)
+        if (pending.isEmpty()) return
+        log("FLUSHING " + pending.size + " stored message(s) to new peer")
+        for (m in pending) handOver(m, endpointId)
+        updateStats()
     }
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            val text = payload.asBytes()?.toString(StandardCharsets.UTF_8) ?: return
-            log(">>> RECEIVED: $text")
+            val bytes = payload.asBytes() ?: return
+            val raw = String(bytes, StandardCharsets.UTF_8)
+            val m = Wire.decode(raw)
+            if (m == null) {
+                log("BAD PACKET dropped")
+                return
+            }
+            when (rules.onReceive(m, nodeIdOf(peerNames[endpointId] ?: ""))) {
+                Verdict.DUPLICATE ->
+                    log("dup blocked: " + m.id)
+
+                Verdict.UNSIGNED_AUTHORITY ->
+                    log("REFUSED unsigned OFFICIAL order from " + m.origin + " - not displayed")
+
+                Verdict.ACCEPTED -> {
+                    log(
+                        ">>> " + m.type.name + " p" + m.priority + ": " + m.text +
+                            "\n    ttl=" + m.ttl + " copies=" + m.copies +
+                            " path=" + m.path.joinToString(">")
+                    )
+                    if (rules.shouldForward(m)) {
+                        broadcast(m)
+                    } else if (m.ttl <= 0) {
+                        log("    stops here - travelled its full " + rules.hopLimit + " hops")
+                    } else {
+                        log("    stops here - last copy, kept but not spread further")
+                    }
+                }
+            }
+            updateStats()
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
@@ -159,26 +405,64 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun sendToAll(text: String) {
-        if (connected.isEmpty()) {
-            log("Nobody connected yet - nothing sent")
+    // -----------------------------------------------------------------------
+    // Topology lock + counters
+    // -----------------------------------------------------------------------
+
+    private fun showTopologyDialog() {
+        val known = peerNames.values.distinct().sorted()
+        if (known.isEmpty()) {
+            log("No peers discovered yet - start the mesh first")
             return
         }
-        val payload = Payload.fromBytes(text.toByteArray(StandardCharsets.UTF_8))
-        connections.sendPayload(connected.toList(), payload)
-        log("<<< SENT: $text")
+        val checked = known.map { nodeIdOf(it) in blocked }.toBooleanArray()
+        AlertDialog.Builder(this)
+            .setTitle("Cut these links (demo topology)")
+            .setMultiChoiceItems(known.toTypedArray(), checked) { _, which, isChecked ->
+                val n = nodeIdOf(known[which])
+                if (isChecked) blocked += n else blocked -= n
+            }
+            .setPositiveButton("Apply") { _, _ ->
+                getSharedPreferences("meshrelay", MODE_PRIVATE).edit()
+                    .putStringSet("blocked", blocked.toSet()).apply()
+                // Drop any link that is now blocked, so the change takes effect at once.
+                for (id in connected.toList()) {
+                    val n = nodeOf(id)
+                    if (n in blocked) {
+                        connections.disconnectFromEndpoint(id)
+                        connected -= id
+                        connectedNodes -= n
+                    }
+                }
+                log("Topology lock: ignoring " + blocked.ifEmpty { setOf("nobody") })
+                updateStats()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun updateStats() {
+        runOnUiThread {
+            tvStats.text = "peers " + connected.size +
+                "   stored " + rules.storeSize() +
+                "   dup blocked " + rules.duplicatesBlocked +
+                "\nforwards " + rules.forwards +
+                "   evicted " + rules.evicted +
+                "   cut " + blocked.size
+        }
     }
 
     private fun log(message: String) {
         val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
         runOnUiThread {
-            tvLog.append("[$time] $message\n")
+            tvLog.append("[" + time + "] " + message + "\n")
             svLog.post { svLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacksAndMessages(null)
         connections.stopAllEndpoints()
     }
 }
