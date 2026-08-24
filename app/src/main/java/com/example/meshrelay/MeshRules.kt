@@ -26,13 +26,19 @@ enum class MsgType(
 ) {
     // copyBudget is how much of the crowd's radio time this kind of message is allowed
     // to spend. An emergency may spread widely. A question about the food stall may not.
-    MEDICAL(10, 16, false, "Medical"),
-    AUTHORITY(10, 16, true, "OFFICIAL"),   // evacuation / crowd direction - signed only
-    MISSING(9, 12, false, "Missing person"),
-    FIRE(8, 12, false, "Fire"),
-    SECURITY(8, 12, false, "Security"),
+    //
+    // FLOOR OF 6, ALWAYS. The budget halves at every handover, and a phone holding the
+    // last copy stops spreading it. So a budget of 3 dies after ONE hop: the first relay
+    // receives 1 and refuses to pass it on. Found on hardware 21 Aug - INFO never
+    // reached the third phone while every other type did, which looked like a radio
+    // problem and was arithmetic. Reaching N hops needs roughly 2^N copies.
+    MEDICAL(10, 24, false, "Medical"),
+    AUTHORITY(10, 24, true, "OFFICIAL"),   // evacuation / crowd direction - signed only
+    MISSING(9, 16, false, "Missing person"),
+    FIRE(8, 16, false, "Fire"),
+    SECURITY(8, 16, false, "Security"),
     CROWD(5, 8, false, "Crowding"),
-    INFO(1, 3, false, "Info");
+    INFO(1, 6, false, "Info");
 
     companion object {
         fun from(name: String): MsgType? = entries.firstOrNull { it.name == name }
@@ -137,6 +143,13 @@ class MeshRules(
      * Rate limit: one joker with a phone must not be able to bury every real
      * emergency under fake ones. Low-priority chatter is not limited.
      */
+    /**
+     * Rehearsing the demo ten times means sending far more emergencies in an hour than
+     * any real person would. Clearing the limit is a demo affordance, not a way round
+     * the rule - say so if anyone asks.
+     */
+    fun resetRateLimit() = highPriorityOriginTimes.clear()
+
     fun canOriginate(type: MsgType, now: Long): Boolean {
         if (type.priority < 8) return true
         highPriorityOriginTimes.removeAll { now - it > 3_600_000L }

@@ -128,6 +128,60 @@ class MeshRulesTest {
         assertEquals(MsgType.INFO.copyBudget, info.copies)
     }
 
+    /**
+     * The bug found on hardware, 21 Aug: INFO had a copy budget of 3, so the first relay
+     * received 1 copy and refused to pass it on. INFO never reached the third phone while
+     * every other type did. It looked like a radio fault and it was arithmetic.
+     *
+     * Walks A -> B -> C for every message type, the way the real phones do.
+     */
+    @Test
+    fun `every message type survives two hops to a third phone`() {
+        // A stand-in for the real signature check, so signed types are not refused here
+        // for a reason this test is not about.
+        val verifier: (MeshMessage) -> Boolean = { it.sig == "ok" }
+        val signer: (MeshMessage) -> String? = { "ok" }
+
+        for (type in MsgType.entries) {
+            val a = MeshRules(myNodeId = "A", verifySignature = verifier)
+            val b = MeshRules(myNodeId = "B", verifySignature = verifier)
+            val c = MeshRules(myNodeId = "C", verifySignature = verifier)
+
+            val atA = a.originate(type, "test", 1L, if (type.needsSignature) signer else null)
+
+            val giveB = a.splitCopiesFor(atA, "B")
+            assertTrue(type.name + ": A had nothing to hand to B", giveB >= 1)
+            val atB = Wire.decode(Wire.encode(atA.copy().also { it.copies = giveB }))!!
+            assertEquals(type.name + ": B refused it", Verdict.ACCEPTED, b.onReceive(atB, "A"))
+            assertTrue(type.name + ": B will not relay it", b.shouldForward(atB))
+
+            val giveC = b.splitCopiesFor(atB, "C")
+            assertTrue(type.name + ": B had nothing to hand to C", giveC >= 1)
+            val atC = Wire.decode(Wire.encode(atB.copy().also { it.copies = giveC }))!!
+            assertEquals(type.name + ": C refused it", Verdict.ACCEPTED, c.onReceive(atC, "B"))
+
+            assertEquals(type.name + ": path is wrong", listOf("A", "B", "C"), atC.path)
+        }
+    }
+
+    @Test
+    fun `no message type is given a budget too small to be relayed`() {
+        // Halving means a budget under 4 cannot survive a single relay. 6 leaves margin.
+        for (type in MsgType.entries) {
+            assertTrue(type.name + " budget too small", type.copyBudget >= 6)
+        }
+    }
+
+    @Test
+    fun `the rate limit can be cleared for rehearsal`() {
+        val r = rules()
+        val now = 10_000_000L
+        repeat(5) { r.originate(MsgType.MEDICAL, "help", now) }
+        assertTrue(!r.canOriginate(MsgType.MEDICAL, now))
+        r.resetRateLimit()
+        assertTrue(r.canOriginate(MsgType.MEDICAL, now))
+    }
+
     @Test
     fun `the last copy is delivered directly, never spread further`() {
         val r = rules()

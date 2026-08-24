@@ -171,7 +171,10 @@ class MainActivity : AppCompatActivity() {
         // can actually be watched happening (Plan.md 17.2).
         tvStats.setOnLongClickListener {
             rules.storeCap = if (rules.storeCap == 200) 10 else 200
+            // Rehearsal sends more emergencies per hour than any real person would.
+            rules.resetRateLimit()
             log("Store cap now " + rules.storeCap + (if (rules.storeCap == 10) " (DEMO)" else ""))
+            log("Rate limit cleared")
             updateStats()
             true
         }
@@ -226,6 +229,13 @@ class MainActivity : AppCompatActivity() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val theirName = info.endpointName
             val theirNode = nodeIdOf(theirName)
+
+            // Never link to yourself. Nearby can surface this phone's own advertisement
+            // if an older client is still running (see the manifest note on rotation),
+            // and a self-link inflates the peer count and wastes copy budget on a phone
+            // that already has the message.
+            if (theirNode == nodeId) return
+
             peerNames[endpointId] = theirName
             log("FOUND " + theirName)
 
@@ -305,6 +315,10 @@ class MainActivity : AppCompatActivity() {
 
     private val connectionLifecycle = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
+            if (nodeIdOf(info.endpointName) == nodeId) {
+                connections.rejectConnection(endpointId)
+                return
+            }
             peerNames[endpointId] = info.endpointName
             if (nodeIdOf(info.endpointName) in blocked) {
                 log("REFUSING " + info.endpointName + " (topology lock)")
@@ -518,6 +532,18 @@ class MainActivity : AppCompatActivity() {
                         connectedNodes -= n
                     }
                 }
+                // Un-ticking a phone has to actively call it back. Nearby only reports a
+                // peer as FOUND when it first appears, so a link cut while discovered
+                // would otherwise stay dead until the peer wandered off and returned.
+                for ((id, name) in peerNames) {
+                    val n = nodeIdOf(name)
+                    if (n !in blocked && n !in connectedNodes && n !in diallingNodes) {
+                        log("Restoring link with " + name + "...")
+                        dialling += id
+                        diallingNodes += n
+                        dial(id, name, 1)
+                    }
+                }
                 log("Topology lock: ignoring " + blocked.ifEmpty { setOf("nobody") })
                 updateStats()
             }
@@ -561,6 +587,10 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        // Stopping endpoints alone was not enough: advertising and discovery kept
+        // running after the Activity died, and the next instance then found them.
+        connections.stopAdvertising()
+        connections.stopDiscovery()
         connections.stopAllEndpoints()
     }
 }
