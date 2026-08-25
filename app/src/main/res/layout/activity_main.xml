@@ -94,10 +94,12 @@
         android:paddingTop="11dp"
         android:paddingBottom="11dp">
 
-        <View
+        <!-- The status light, grown into something worth looking at. Every dot in it
+             is a real link - see MeshPulseView. -->
+        <com.example.meshrelay.MeshPulseView
             android:id="@+id/vMeshDot"
-            android:layout_width="10dp"
-            android:layout_height="10dp"
+            android:layout_width="46dp"
+            android:layout_height="46dp"
             android:layout_marginEnd="12dp" />
 
         <LinearLayout
@@ -350,6 +352,16 @@
 
         <com.example.meshrelay.ReportMapView
             android:id="@+id/mapView"
+            android:background="@drawable/bg_card"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+
+        <!-- The link graph: who can reach whom. NOT where anyone is standing - the map
+             above is the one that means geography, and the graph says so on its own
+             footer so that the two can never be confused for each other. -->
+        <com.example.meshrelay.MeshGraphView
+            android:id="@+id/graphView"
             android:background="@drawable/bg_card"
             android:layout_width="match_parent"
             android:layout_height="match_parent"

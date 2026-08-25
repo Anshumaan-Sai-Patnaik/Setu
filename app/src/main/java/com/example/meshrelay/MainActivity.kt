@@ -59,12 +59,32 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chkLoc: CheckBox
     private lateinit var tvLocState: TextView
     private lateinit var mapView: ReportMapView
+    private lateinit var graphView: MeshGraphView
+    private lateinit var btnTopology: TextView
 
     // The banner. One object that both states the mesh's condition and starts it.
     private lateinit var cardMesh: View
-    private lateinit var vMeshDot: View
+    private lateinit var vMeshDot: MeshPulseView
     private lateinit var tvMeshState: TextView
     private lateinit var tvMeshHint: TextView
+
+    /**
+     * How far the mesh has got in coming up.
+     *
+     * Every one of these is a real event, not a step in a scripted animation: the radio
+     * genuinely takes a moment to start advertising and discovering, a phone is genuinely
+     * found before it is linked, and the two sides genuinely have to agree which of them
+     * dials. Showing those moments is the difference between an honest startup sequence
+     * and a progress bar that would say the same thing in an empty room.
+     */
+    private enum class MeshStage { OFF, RADIO, LOOKING, FOUND }
+
+    private var stage = MeshStage.OFF
+    private var advertisingUp = false
+    private var discoveryUp = false
+
+    /** The banner text last painted, so it only animates when it genuinely changes. */
+    private var lastBannerState = ""
 
     // Counters, promoted from a monospace footnote to something readable across a room.
     private lateinit var statsBlock: View
@@ -79,14 +99,25 @@ class MainActivity : AppCompatActivity() {
 
     private val inbox = MessageAdapter()
 
-    /** The three things this phone can show. Named tabs, not a cycle. */
+    /**
+     * What this phone can show. Named tabs, not a cycle.
+     *
+     * GRAPH has no tab chip of its own: it is reached from the LINKS button, which sits
+     * outside the tab bar and lights up while it is open. Four chips would not fit
+     * legibly on the Nokia 3.2, and LINKS is a demo control that has to stay findable
+     * under pressure rather than becoming one of a row of equals.
+     */
     private enum class Pane(val title: String) {
         INBOX("Incoming - most urgent first"),
         MAP("Reports by location"),
-        LOG("Debug log")
+        LOG("Debug log"),
+        GRAPH("Links - who can reach whom")
     }
 
     private var pane = Pane.INBOX
+
+    /** The pane to come back to when the graph is closed again. */
+    private var paneBeforeGraph = Pane.INBOX
 
     /** What a person may actually send. Excludes app plumbing such as location updates. */
     private val reportableTypes = MsgType.entries.filter { !it.isPlumbing }
@@ -129,6 +160,40 @@ class MainActivity : AppCompatActivity() {
     private fun nodeOf(endpointId: String) = nodeIdOf(peerNames[endpointId] ?: "")
     private val handler = Handler(Looper.getMainLooper())
     private var meshRunning = false
+
+    /**
+     * Phones this one has heard OF but never linked to, and the links between them.
+     *
+     * Both come free from something already on every message: `path`, the list of phones
+     * it travelled through. A path of A > B > C is direct evidence that A and B were
+     * linked and that B and C were, and it is evidence this phone can use even though it
+     * only ever spoke to one of them.
+     *
+     * This is knowledge, not guesswork, and the graph draws it differently from a live
+     * link for exactly that reason - a dashed line between two other phones says "a
+     * message came this way", not "I can see them".
+     */
+    private val heardOf = mutableSetOf<String>()
+
+    /** Unordered pairs as "a|b", lower id first, so the same link is never stored twice. */
+    private val observedLinks = mutableSetOf<String>()
+
+    private fun linkKey(a: String, b: String) =
+        if (a <= b) "$a|$b" else "$b|$a"
+
+    /**
+     * Learn the shape of the network from a message that has just arrived.
+     *
+     * Deliberately additive: a link is remembered once it has been seen, and is not
+     * forgotten when the phones move apart. That is the honest reading of the evidence -
+     * "a message crossed here" stays true afterwards - and it is also what keeps the
+     * far phone on screen during the store-and-forward beat, when the whole point is
+     * that this phone still knows about somewhere it cannot currently reach.
+     */
+    private fun learnTopology(path: List<String>) {
+        for (n in path) if (n != nodeId) heardOf += n
+        for (i in 0 until path.size - 1) observedLinks += linkKey(path[i], path[i + 1])
+    }
 
     /**
      * Topology lock (Plan.md 11). All three phones sit on one table and can all hear
@@ -177,6 +242,8 @@ class MainActivity : AppCompatActivity() {
         chkLoc = findViewById(R.id.chkLoc)
         tvLocState = findViewById(R.id.tvLocState)
         mapView = findViewById(R.id.mapView)
+        graphView = findViewById(R.id.graphView)
+        btnTopology = findViewById(R.id.btnTopology)
 
         cardMesh = findViewById(R.id.btnStart)
         vMeshDot = findViewById(R.id.vMeshDot)
@@ -227,7 +294,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<TextView>(R.id.btnTopology).setOnClickListener { showTopologyDialog() }
+        // LINKS opens the graph, and opens it again into whatever was on screen before.
+        // The cut-links control moved to a long-press and onto the node sheet: cutting a
+        // link is a stage trick used three times in a demo, whereas looking at the shape
+        // of the network is the thing worth putting one tap away.
+        btnTopology.setOnClickListener {
+            showPane(if (pane == Pane.GRAPH) paneBeforeGraph else Pane.GRAPH)
+        }
+        btnTopology.setOnLongClickListener { showTopologyDialog(); true }
+
+        graphView.onNodeTap = { node -> if (node != null) showNodeSheet(node) }
 
         // Long-press the title to turn this phone into the command phone. Hidden
         // because it is a staff action, not something a visitor should ever find.
@@ -271,6 +347,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun startMesh() {
         meshRunning = true
+        stage = MeshStage.RADIO
+        advertisingUp = false
+        discoveryUp = false
+        updateStats()
 
         connections.startAdvertising(
             myName,
@@ -278,7 +358,7 @@ class MainActivity : AppCompatActivity() {
             connectionLifecycle,
             AdvertisingOptions.Builder().setStrategy(strategy).build()
         )
-            .addOnSuccessListener { log("ADVERTISING started") }
+            .addOnSuccessListener { log("ADVERTISING started"); radioUp(advertising = true) }
             .addOnFailureListener { log("ADVERTISING failed: " + it.message) }
 
         connections.startDiscovery(
@@ -286,8 +366,23 @@ class MainActivity : AppCompatActivity() {
             endpointDiscovery,
             DiscoveryOptions.Builder().setStrategy(strategy).build()
         )
-            .addOnSuccessListener { log("DISCOVERY started") }
+            .addOnSuccessListener { log("DISCOVERY started"); radioUp(discovery = true) }
             .addOnFailureListener { log("DISCOVERY failed: " + it.message) }
+    }
+
+    /**
+     * Both halves have to be up before this phone is really in the network: advertising
+     * so others can find it, discovery so it can find them. One without the other is a
+     * phone that can only be called or can only call, and saying "looking for phones"
+     * then would be a small lie.
+     */
+    private fun radioUp(advertising: Boolean = false, discovery: Boolean = false) {
+        if (advertising) advertisingUp = true
+        if (discovery) discoveryUp = true
+        if (advertisingUp && discoveryUp && stage == MeshStage.RADIO) {
+            stage = MeshStage.LOOKING
+        }
+        updateStats()
     }
 
     private val endpointDiscovery = object : EndpointDiscoveryCallback() {
@@ -318,6 +413,13 @@ class MainActivity : AppCompatActivity() {
             // the model, so comparing names would make one model always the dialler.
             // Comparing random IDs spreads the role evenly across devices.
             log("Linking with " + theirName + "...")
+
+            // A real phone, really found, about to be really linked. This is the beat
+            // between "looking" and "connected", and it is worth a second on screen.
+            if (connected.isEmpty()) {
+                stage = MeshStage.FOUND
+                updateStats()
+            }
 
             if (nodeId < theirNode) {
                 dialling += endpointId
@@ -415,6 +517,9 @@ class MainActivity : AppCompatActivity() {
             // Only forget the phone if no other endpoint ID for it is still live.
             if (connected.none { nodeOf(it) == theirNode }) connectedNodes -= theirNode
             log("DISCONNECTED (" + connected.size + " peer(s))")
+            // Back to searching, honestly. When a judge walks off with a phone the
+            // banner has to admit it - that admission is what proves the rest is real.
+            if (connected.isEmpty() && meshRunning) stage = MeshStage.LOOKING
             updateStats()
         }
     }
@@ -476,6 +581,11 @@ class MainActivity : AppCompatActivity() {
         val payload = Payload.fromBytes(Wire.encode(outgoing).toByteArray(StandardCharsets.UTF_8))
         connections.sendPayload(listOf(endpointId), payload)
         rules.markForwarded(m)
+        // A dot leaves this phone and crosses to that one. Every dot on the graph is a
+        // payload that was actually put on the radio - there is no traffic animation
+        // that runs when the mesh is quiet, which is the difference between this and
+        // something that would look identical in an empty room.
+        runOnUiThread { graphView.spark(nodeId, peerNode, Palette.forPriority(m.priority)) }
         return true
     }
 
@@ -501,7 +611,17 @@ class MainActivity : AppCompatActivity() {
                 log("BAD PACKET dropped")
                 return
             }
-            when (rules.onReceive(m, nodeIdOf(peerNames[endpointId] ?: ""))) {
+            val fromNode = nodeIdOf(peerNames[endpointId] ?: "")
+
+            // Learn the shape of the network before deciding what to do with the message,
+            // so a duplicate still teaches something. A copy arriving by a second route
+            // is the clearest evidence there is that the second route exists.
+            learnTopology(m.path)
+            runOnUiThread {
+                graphView.spark(fromNode, nodeId, Palette.forPriority(m.priority))
+            }
+
+            when (rules.onReceive(m, fromNode)) {
                 Verdict.DUPLICATE ->
                     log("dup blocked: " + m.id)
 
@@ -640,35 +760,111 @@ class MainActivity : AppCompatActivity() {
                 val n = nodeIdOf(known[which])
                 if (isChecked) blocked += n else blocked -= n
             }
-            .setPositiveButton("Apply") { _, _ ->
-                getSharedPreferences("meshrelay", MODE_PRIVATE).edit()
-                    .putStringSet("blocked", blocked.toSet()).apply()
-                // Drop any link that is now blocked, so the change takes effect at once.
-                for (id in connected.toList()) {
-                    val n = nodeOf(id)
-                    if (n in blocked) {
-                        connections.disconnectFromEndpoint(id)
-                        connected -= id
-                        connectedNodes -= n
-                    }
-                }
-                // Un-ticking a phone has to actively call it back. Nearby only reports a
-                // peer as FOUND when it first appears, so a link cut while discovered
-                // would otherwise stay dead until the peer wandered off and returned.
-                for ((id, name) in peerNames) {
-                    val n = nodeIdOf(name)
-                    if (n !in blocked && n !in connectedNodes && n !in diallingNodes) {
-                        log("Restoring link with " + name + "...")
-                        dialling += id
-                        diallingNodes += n
-                        dial(id, name, 1)
-                    }
-                }
-                log("Topology lock: ignoring " + blocked.ifEmpty { setOf("nobody") })
-                updateStats()
-            }
+            .setPositiveButton("Apply") { _, _ -> applyTopologyLock() }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    /**
+     * Make `blocked` true on the radio.
+     *
+     * Extracted so the node sheet and the tick-list dialog cannot drift apart: this is
+     * the one demo control that must behave identically however it was reached.
+     */
+    private fun applyTopologyLock() {
+        getSharedPreferences("meshrelay", MODE_PRIVATE).edit()
+            .putStringSet("blocked", blocked.toSet()).apply()
+        // Drop any link that is now blocked, so the change takes effect at once.
+        for (id in connected.toList()) {
+            val n = nodeOf(id)
+            if (n in blocked) {
+                connections.disconnectFromEndpoint(id)
+                connected -= id
+                connectedNodes -= n
+            }
+        }
+        // Un-blocking a phone has to actively call it back. Nearby only reports a
+        // peer as FOUND when it first appears, so a link cut while discovered
+        // would otherwise stay dead until the peer wandered off and returned.
+        for ((id, name) in peerNames) {
+            val n = nodeIdOf(name)
+            if (n !in blocked && n !in connectedNodes && n !in diallingNodes) {
+                log("Restoring link with " + name + "...")
+                dialling += id
+                diallingNodes += n
+                dial(id, name, 1)
+            }
+        }
+        log("Topology lock: ignoring " + blocked.ifEmpty { setOf("nobody") })
+        updateStats()
+    }
+
+    /**
+     * One node on the graph, opened by tapping it.
+     *
+     * What a person actually wants to know about a dot: which phone it is, whether this
+     * one can reach it, and what it has said. The last is the useful part during a demo -
+     * "everything that came from that phone" is a question the inbox cannot answer,
+     * because the inbox is deliberately sorted by urgency rather than by who sent it.
+     *
+     * Cutting the link lives here too. On the graph you tap the phone you mean, which is
+     * a great deal harder to get wrong in front of a panel than finding the right line in
+     * a tick list of similar-looking device names.
+     */
+    private fun showNodeSheet(node: String) {
+        val linked = node in connectedNodes
+        val model = deviceModelOf(node)
+        val cut = node in blocked
+
+        val fromThem = rules.inboxOrder().filter { it.origin == node }
+        val relayedThrough = rules.inboxOrder().count { it.origin != node && node in it.path }
+
+        val state = when {
+            cut -> "Link cut by hand - this phone is pretending it is out of range"
+            linked -> "Linked now - this phone can hand it a message directly"
+            else -> "Known about, not reachable. Seen in the path of a message that " +
+                "arrived, so it exists and something got here from it"
+        }
+
+        val body = StringBuilder()
+        body.append(if (model.isNotEmpty()) model else "Unknown device")
+        body.append("\nnode ").append(node)
+        body.append("\n\n").append(state)
+        body.append("\n\nOriginated ").append(fromThem.size)
+            .append(if (fromThem.size == 1) " report" else " reports")
+        if (relayedThrough > 0) {
+            body.append(", and relayed ").append(relayedThrough)
+                .append(if (relayedThrough == 1) " other" else " others")
+        }
+
+        if (fromThem.isEmpty()) {
+            body.append("\n\nNothing from this phone yet.")
+        } else {
+            body.append("\n")
+            // Most urgent first, same order as the inbox, and capped: a dialog is not a
+            // second inbox and a scrolling wall of text on stage helps nobody.
+            for (m in fromThem.take(6)) {
+                body.append("\n• ").append(m.type.tag).append(" — ").append(m.text)
+            }
+            if (fromThem.size > 6) {
+                body.append("\n• ...and ").append(fromThem.size - 6).append(" more")
+            }
+        }
+
+        val d = dialog()
+            .setTitle(if (model.isNotEmpty()) model else node.take(6))
+            .setMessage(body.toString())
+            .setPositiveButton("Close", null)
+
+        // Only phones this one has actually discovered can be cut. A phone known only
+        // from a message path has no link here to cut in the first place.
+        if (peerNames.values.any { nodeIdOf(it) == node }) {
+            d.setNeutralButton(if (cut) "Restore link" else "Pretend out of range") { _, _ ->
+                if (cut) blocked -= node else blocked += node
+                applyTopologyLock()
+            }
+        }
+        d.show()
     }
 
     // -----------------------------------------------------------------------
@@ -1060,14 +1256,71 @@ class MainActivity : AppCompatActivity() {
      * mean something to us and nothing to a judge (Plan.md 9).
      */
     private fun showPane(target: Pane) {
+        if (target == Pane.GRAPH && pane != Pane.GRAPH) paneBeforeGraph = pane
+        val changed = target != pane
         pane = target
         fun vis(on: Boolean) = if (on) View.VISIBLE else View.GONE
         rvInbox.visibility = vis(pane == Pane.INBOX)
         mapView.visibility = vis(pane == Pane.MAP)
         svLog.visibility = vis(pane == Pane.LOG)
+        graphView.visibility = vis(pane == Pane.GRAPH)
         tvPaneTitle.text = pane.title
+        // GRAPH has no chip, so its ordinal matches none of them and the whole bar goes
+        // unselected - which is right: the lit control is the LINKS button instead.
         tabs.forEachIndexed { i, tab -> tab.isSelected = i == pane.ordinal }
+        paintTopologyButton()
+        if (changed) fadeInPane()
         refreshInbox()
+    }
+
+    /**
+     * A short fade as the content area changes hands.
+     *
+     * Only on a real change of pane, and short enough that it never delays reading what
+     * is underneath: switching to the graph in the middle of the demo should feel like
+     * one screen becoming another, not like waiting for something to load.
+     */
+    private fun fadeInPane() {
+        val shown: View = when (pane) {
+            Pane.INBOX -> rvInbox
+            Pane.MAP -> mapView
+            Pane.LOG -> svLog
+            Pane.GRAPH -> graphView
+        }
+        shown.animate().cancel()
+        shown.alpha = 0f
+        shown.animate().alpha(1f).setDuration(160).start()
+    }
+
+    /** LINKS is lit while the graph is open, so it reads as a toggle rather than a jump. */
+    private fun paintTopologyButton() {
+        val on = pane == Pane.GRAPH
+        val dp = resources.displayMetrics.density
+        // Orange, not teal, when links are cut: the picture on screen is then not the
+        // network the room actually has, and that should be uncomfortable to look at.
+        val colour = if (blocked.isNotEmpty()) Palette.ORANGE else Palette.TEAL
+        btnTopology.text = if (blocked.isEmpty()) "LINKS" else "LINKS " + blocked.size + "✂"
+        if (on) {
+            btnTopology.setTextColor(colour)
+            btnTopology.background = Palette.pill(
+                Palette.tint(colour, 34), 10f * dp, colour, (1 * dp).toInt()
+            )
+        } else {
+            btnTopology.setTextColor(
+                if (blocked.isEmpty()) Palette.TEXT_SECONDARY else Palette.ORANGE
+            )
+            btnTopology.setBackgroundResource(R.drawable.bg_ghost_button)
+        }
+    }
+
+    /**
+     * The three tiles, as counters that count rather than numbers that teleport.
+     * See TickingNumber - the eviction beat is the reason it exists.
+     */
+    private val tickers = mutableMapOf<Int, TickingNumber>()
+
+    private fun bumpTile(tile: TextView, value: Int, colour: Int) {
+        tickers.getOrPut(tile.id) { TickingNumber(tile) }.set(value, colour)
     }
 
     /** The identity badge, in its two states. Ordinary phone. */
@@ -1106,6 +1359,8 @@ class MainActivity : AppCompatActivity() {
         val state: String
         val hint: String
 
+        val puck: MeshPulseView.Mode
+
         when {
             // Not "OFFLINE". Nothing is broken - it has not been started. On a screen
             // whose entire claim is "this works when everything else is down", the word
@@ -1114,30 +1369,75 @@ class MainActivity : AppCompatActivity() {
                 colour = Palette.SLATE
                 state = "TAP TO JOIN THE NETWORK"
                 hint = "This phone is not carrying messages for anyone yet"
+                puck = MeshPulseView.Mode.IDLE
+            }
+            peers > 0 -> {
+                colour = Palette.TEAL
+                state = "CONNECTED TO " + peers + " PHONE" + (if (peers == 1) "" else "S")
+                hint = "Passing messages on for people around you"
+                puck = MeshPulseView.Mode.LINKED
+            }
+            // Bluetooth advertising and discovery genuinely take a moment to come up,
+            // and this is that moment - not a delay inserted to look busy.
+            stage == MeshStage.RADIO -> {
+                colour = Palette.ORANGE
+                state = "STARTING RADIO"
+                hint = "Advertising this phone, and listening for others"
+                puck = MeshPulseView.Mode.SCANNING
+            }
+            // A real phone has been discovered and the two sides are settling which of
+            // them places the call.
+            stage == MeshStage.FOUND -> {
+                colour = Palette.ORANGE
+                state = "PHONE FOUND"
+                hint = "Agreeing which side dials, then linking"
+                puck = MeshPulseView.Mode.SCANNING
             }
             // Silence is the normal state of a mesh between encounters, and this is a
             // free chance to narrate store-and-forward before anyone has to explain it.
-            peers == 0 -> {
+            else -> {
                 colour = Palette.ORANGE
                 state = "LOOKING FOR PHONES"
                 hint = "No one in range. Anything you send waits here and goes out " +
                     "the moment a phone appears"
-            }
-            else -> {
-                colour = Palette.TEAL
-                state = "CONNECTED TO " + peers + " PHONE" + (if (peers == 1) "" else "S")
-                hint = "Passing messages on for people around you"
+                puck = MeshPulseView.Mode.SCANNING
             }
         }
 
         cardMesh.background = Palette.pill(
             Palette.tint(colour, 30), 14f * dp, Palette.tint(colour, 130), (1 * dp).toInt()
         )
-        vMeshDot.background = Palette.dot(colour)
-        tvMeshState.text = state
+        // One dot per real link, labelled by node so a given phone keeps its position
+        // on the dial while others come and go.
+        vMeshDot.setState(puck, colour, connected.map { nodeOf(it) }.filter { it.isNotEmpty() })
+
         tvMeshState.setTextColor(colour)
-        tvMeshHint.text = hint
         tvMeshHint.setTextColor(Palette.TEXT_SECONDARY)
+
+        // Unchanged, or the very first paint: set it and say nothing. Fading the banner
+        // in at launch would read as the app still loading, which is the opposite of
+        // what this screen is for.
+        if (state == lastBannerState || lastBannerState.isEmpty()) {
+            lastBannerState = state
+            tvMeshState.text = state
+            tvMeshHint.text = hint
+            return
+        }
+        lastBannerState = state
+
+        // Crossfade, so the startup sequence reads as one thing progressing rather than
+        // three unrelated words flickering. Short: this is punctuation between real
+        // events, and it must never be the reason someone waits to see the truth.
+        tvMeshState.animate().cancel()
+        tvMeshHint.animate().cancel()
+        val swap = Runnable {
+            tvMeshState.text = state
+            tvMeshHint.text = hint
+            tvMeshState.animate().alpha(1f).setDuration(170).start()
+            tvMeshHint.animate().alpha(1f).setDuration(170).start()
+        }
+        tvMeshState.animate().alpha(0f).setDuration(110).withEndAction(swap).start()
+        tvMeshHint.animate().alpha(0f).setDuration(110).start()
     }
 
     private fun refreshInbox() {
@@ -1149,6 +1449,7 @@ class MainActivity : AppCompatActivity() {
             // reads as a crash for the two seconds before anyone explains it.
             tvEmpty.visibility =
                 if (held.isEmpty() && pane == Pane.INBOX) View.VISIBLE else View.GONE
+            paintGraph()
             paintLocationState()
         }
     }
@@ -1190,10 +1491,10 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             paintMeshBanner()
 
-            tvPeers.text = connected.size.toString()
-            tvPeers.setTextColor(if (connected.isEmpty()) Palette.TEXT_DIM else Palette.TEAL)
-
-            tvStored.text = rules.storeSize().toString()
+            bumpTile(
+                tvPeers, connected.size,
+                if (connected.isEmpty()) Palette.TEXT_DIM else Palette.TEAL
+            )
             // The cap is in the caption rather than the number: "7" reads at a glance,
             // "7/200" does not. When the store is squeezed to 10 for the eviction beat,
             // the caption says DEMO out loud rather than letting it pass unnoticed.
@@ -1201,11 +1502,16 @@ class MainActivity : AppCompatActivity() {
             tvStoredCaption.text =
                 if (squeezed) "Carrying / " + rules.storeCap + " · DEMO" else "Carrying"
             val full = rules.storeSize() >= rules.storeCap
-            tvStored.setTextColor(if (full) Palette.AMBER else Palette.TEXT)
+            bumpTile(
+                tvStored, rules.storeSize(),
+                if (full) Palette.AMBER else Palette.TEXT
+            )
 
             val flight = rules.awaitingConfirmation()
-            tvFlight.text = flight.toString()
-            tvFlight.setTextColor(if (flight > 0) Palette.ORANGE else Palette.TEXT_DIM)
+            bumpTile(
+                tvFlight, flight,
+                if (flight > 0) Palette.ORANGE else Palette.TEXT_DIM
+            )
             tvFlightCaptionText()
 
             tvStats.text = "dup blocked " + rules.duplicatesBlocked +
@@ -1213,7 +1519,51 @@ class MainActivity : AppCompatActivity() {
                 "   evicted " + rules.evicted +
                 "\nconfirmed " + rules.confirmed +
                 "   links cut " + blocked.size
+
+            paintTopologyButton()
         }
+    }
+
+    /**
+     * Hand the graph everything this phone knows about the network.
+     *
+     * Two kinds of node and the difference between them is the point: phones linked right
+     * now, which this one can hand a message to this second, and phones it has only heard
+     * of through the path on a message that arrived. On three phones with one link cut,
+     * the far phone is the second kind - visible, and provably not reachable.
+     */
+    private fun paintGraph() {
+        val liveNodes = connected.mapNotNull { id ->
+            val node = nodeOf(id)
+            if (node.isEmpty()) null
+            else MeshGraphView.Peer(node, deviceModelOf(node), linked = true)
+        }
+        val liveIds = liveNodes.map { it.id }.toSet()
+
+        // Only ever heard of. A phone that is currently linked is not also drawn as a
+        // rumour about itself.
+        val distant = heardOf
+            .filter { it !in liveIds && it != nodeId }
+            .map { MeshGraphView.Peer(it, deviceModelOf(it), linked = false) }
+
+        // Every live link is also an observed link - this phone is one end of it.
+        val links = observedLinks.toMutableSet()
+        for (n in liveIds) links += linkKey(nodeId, n)
+
+        graphView.show(nodeId, liveNodes + distant, links)
+    }
+
+    /**
+     * The device model for a node, where we happen to know it.
+     *
+     * We only know it for phones this one has actually linked to, because the model name
+     * travels in the Nearby endpoint name and nowhere else - a message carries node ids
+     * and nothing about the hardware. So a distant phone shows as its id, which is honest
+     * about what this phone actually knows.
+     */
+    private fun deviceModelOf(node: String): String {
+        val name = peerNames.values.firstOrNull { nodeIdOf(it) == node } ?: return ""
+        return name.substringBeforeLast('-')
     }
 
     /** Confirmed is worth its own word once anything has been confirmed. */
@@ -1234,6 +1584,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        // A counter half way through a roll must not outlive the view it is writing into.
+        for (t in tickers.values) t.stop()
         // Stopping endpoints alone was not enough: advertising and discovery kept
         // running after the Activity died, and the next instance then found them.
         connections.stopAdvertising()

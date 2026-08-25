@@ -23,12 +23,30 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
     private var deliveryOf: (String) -> Delivery? = { null }
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
 
+    /** Everything this list has already shown, so only genuine arrivals animate. */
+    private val known = mutableSetOf<String>()
+
+    /**
+     * Arrivals waiting to be animated. Consumed on first bind, so scrolling a message
+     * off screen and back does not replay its entrance.
+     */
+    private val arriving = mutableSetOf<String>()
+
+    /** Receipts already celebrated. The flip to DELIVERED happens once, not on every repaint. */
+    private val confirmed = mutableSetOf<String>()
+
     fun submit(
         list: List<MeshMessage>,
         ownPosition: Position? = null,
         myNode: String = "",
         delivery: (String) -> Delivery? = { null }
     ) {
+        // A message this list has never seen has just crossed the crowd to get here.
+        // Worth a quarter of a second, especially when a phone comes back into range and
+        // a whole held-up batch lands at once - that flush is store-and-forward, the
+        // least obvious behaviour in the project and the one worth making people watch.
+        for (m in list) if (known.add(m.id)) arriving += m.id
+
         items = list
         own = ownPosition
         myNodeId = myNode
@@ -94,6 +112,20 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
 
         holder.body.text = m.text
 
+        // Entrance, once. The reset in the else branch matters as much as the animation:
+        // RecyclerView hands back used views, and one left half faded would look like a
+        // rendering bug at exactly the wrong moment.
+        val row = holder.itemView
+        row.animate().cancel()
+        if (arriving.remove(m.id)) {
+            row.alpha = 0f
+            row.translationY = -10f * dp
+            row.animate().alpha(1f).translationY(0f).setDuration(260).start()
+        } else {
+            row.alpha = 1f
+            row.translationY = 0f
+        }
+
         // Shown because a rule the judges cannot see does not exist: how far it has
         // left to travel, how many copies it may still spend, and the phones it
         // physically passed through to get here.
@@ -134,7 +166,27 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Row>() {
                 Palette.tint(Palette.GREEN, 30), 8f * dp,
                 Palette.tint(Palette.GREEN, 80), (1 * dp).toInt()
             )
+
+            // Demo moment five: a judge is holding this phone, watching their own report
+            // sit at "in flight". The flip is the payoff and it must not be something
+            // they notice only because someone pointed at it afterwards.
+            holder.receipt.animate().cancel()
+            if (confirmed.add(m.id)) {
+                holder.receipt.alpha = 0f
+                holder.receipt.scaleX = 0.94f
+                holder.receipt.scaleY = 0.94f
+                holder.receipt.animate()
+                    .alpha(1f).scaleX(1f).scaleY(1f).setDuration(320).start()
+            } else {
+                holder.receipt.alpha = 1f
+                holder.receipt.scaleX = 1f
+                holder.receipt.scaleY = 1f
+            }
         } else {
+            holder.receipt.animate().cancel()
+            holder.receipt.alpha = 1f
+            holder.receipt.scaleX = 1f
+            holder.receipt.scaleY = 1f
             // Orange, not red: waiting is not failure. It is the normal state of a
             // message crossing a crowd, and it is the state a judge is watching change.
             holder.receipt.text = "○  IN FLIGHT  ·  no responder has confirmed it yet"
