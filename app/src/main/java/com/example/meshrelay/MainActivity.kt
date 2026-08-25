@@ -223,7 +223,7 @@ class MainActivity : AppCompatActivity() {
             startMesh()
         } else {
             log("DENIED: " + denied.joinToString(", ") { it.substringAfterLast('.') })
-            log("Grant them in Settings > Apps > setu > Permissions")
+            log("Grant them in Settings > Apps > s\u0113tu > Permissions")
         }
     }
 

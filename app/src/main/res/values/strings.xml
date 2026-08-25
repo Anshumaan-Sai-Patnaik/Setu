@@ -8,8 +8,21 @@
       of a screen whose job is to stay calm during an emergency is the wrong first
       impression - and this app already has exactly one thing allowed to shout, which is
       the mesh state banner.
+
+      The macron on the e marks the long vowel of the original word - SAY-tu, not SET-oo.
+      It is part of the name, not decoration.
     -->
-    <string name="app_name">setu</string>
+    <!--
+      Written as the XML escape rather than the literal character on purpose. The file is
+      UTF-8 and the literal would work today, but a single tool re-saving this file in
+      another encoding would turn the wordmark into a mojibake box on the splash screen -
+      and nothing in the build would fail to warn about it. The escape is plain ASCII on
+      disk and cannot break that way. It renders as e-macron.
+
+      Checked: the bundled Noto Serif wordmark face has a real glyph for U+0113, so this
+      is not a fallback-font composite.
+    -->
+    <string name="app_name">s&#x0113;tu</string>
 
     <!-- Held separately so the gloss can be shown or dropped without touching the wordmark. -->
     <string name="app_meaning">Sanskrit: bridge</string>
