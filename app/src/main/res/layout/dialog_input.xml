@@ -18,12 +18,14 @@
     android:paddingTop="4dp"
     android:paddingBottom="8dp">
 
+    <!-- Full-strength, like every other dialog body. This is the sentence explaining
+         what pasting a key does, read over a shoulder, in a dark room. -->
     <TextView
         android:id="@+id/tvDialogBody"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textColor="@color/text_secondary"
-        android:textSize="13sp"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp"
         android:lineSpacingExtra="3dp" />
 
     <EditText

@@ -50,6 +50,23 @@
         <item name="android:textStyle">bold</item>
     </style>
 
+    <!--
+         The body of a dialog is the part that is actually being read, and it was the
+         hardest thing in the app to read: Material3 draws it in colorOnSurfaceVariant,
+         which nothing here had set, so it fell through to a Material default meant for a
+         light sheet and came out barely a shade off the background. Setting
+         textColorSecondary did not touch it - that is a different attribute and it was
+         the wrong one to reach for.
+
+         Body text is now full-strength. Dimming the explanation and leaving the buttons
+         bright is exactly backwards on a screen someone is reading over a shoulder.
+    -->
+    <style name="DialogBody.MeshRelay" parent="MaterialAlertDialog.Material3.Body.Text">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:lineSpacingExtra">3dp</item>
+    </style>
+
     <style name="DialogButton.MeshRelay" parent="Widget.Material3.Button.TextButton.Dialog">
         <item name="android:textColor">@color/teal</item>
         <item name="android:textStyle">bold</item>
@@ -60,11 +77,14 @@
         <item name="colorPrimary">@color/teal</item>
         <item name="colorSurface">@color/surface</item>
         <item name="colorOnSurface">@color/text_primary</item>
+        <!-- The one that actually paints dialog body text. -->
+        <item name="colorOnSurfaceVariant">@color/text_primary</item>
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
         <item name="android:textColorHint">@color/text_dim</item>
         <item name="alertDialogStyle">@style/MaterialAlertDialog.MeshRelay</item>
         <item name="materialAlertDialogTitleTextStyle">@style/DialogTitle.MeshRelay</item>
+        <item name="materialAlertDialogBodyTextStyle">@style/DialogBody.MeshRelay</item>
         <item name="buttonBarPositiveButtonStyle">@style/DialogButton.MeshRelay</item>
         <item name="buttonBarNegativeButtonStyle">@style/DialogButton.MeshRelay</item>
         <item name="buttonBarNeutralButtonStyle">@style/DialogButton.MeshRelay</item>
