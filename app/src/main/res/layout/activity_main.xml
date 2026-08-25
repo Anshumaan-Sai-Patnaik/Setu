@@ -9,6 +9,7 @@
   reporting is the one thing a frightened person must be able to do without hunting.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -35,23 +36,24 @@
             android:layout_height="20dp"
             android:layout_marginEnd="9dp" />
 
+        <!--
+             The wordmark. Lower case deliberately, and a serif deliberately: everything
+             else on this screen is a technical sans, so the one serif on it reads as a
+             name rather than as another label. The face is bundled in res/font rather
+             than named as a system family - Samsung and Realme both ship their own
+             default sans, so "sans-serif" would draw three different wordmarks on the
+             three demo phones.
+        -->
         <TextView
+            android:id="@+id/tvWordmark"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="MESH"
+            android:text="@string/app_name"
             android:textColor="@color/text_primary"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:letterSpacing="0.12" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="RELAY"
-            android:textColor="@color/teal"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:letterSpacing="0.12" />
+            android:textSize="21sp"
+            android:letterSpacing="0.06"
+            android:fontFamily="@font/setu_wordmark"
+            app:fontFamily="@font/setu_wordmark" />
 
         <View
             android:layout_width="0dp"

@@ -1,3 +1,16 @@
 <resources>
-    <string name="app_name">MeshRelay</string>
+    <!--
+      setu - Sanskrit for "bridge", and the argument in one word: people become phones,
+      phones become a network, the network becomes rescue infrastructure. Each step
+      bridges to the next.
+
+      Lower case on purpose, wherever it appears. An all-caps name shouting from the top
+      of a screen whose job is to stay calm during an emergency is the wrong first
+      impression - and this app already has exactly one thing allowed to shout, which is
+      the mesh state banner.
+    -->
+    <string name="app_name">setu</string>
+
+    <!-- Held separately so the gloss can be shown or dropped without touching the wordmark. -->
+    <string name="app_meaning">Sanskrit: bridge</string>
 </resources>
